@@ -1,0 +1,264 @@
+# database.py
+import sqlite3
+import logging
+from datetime import datetime
+import os
+
+logger = logging.getLogger(__name__)
+
+class Database:
+    def __init__(self, db_name="bot_database.db"):
+        """تهيئة قاعدة البيانات"""
+        self.db_name = db_name
+        self.init_database()
+    
+    def get_connection(self):
+        """الحصول على اتصال بقاعدة البيانات"""
+        conn = sqlite3.connect(self.db_name)
+        conn.row_factory = sqlite3.Row  # للحصول على نتائج كـ dictionary
+        return conn
+    
+    def init_database(self):
+        """إنشاء الجداول إذا لم تكن موجودة"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # جدول المستخدمين
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    join_date DATETIME,
+                    message_count INTEGER DEFAULT 0,
+                    last_active DATETIME,
+                    is_admin BOOLEAN DEFAULT 0
+                )
+                ''')
+                
+                # جدول الإذاعات
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS broadcasts (
+                    broadcast_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER,
+                    message_text TEXT,
+                    sent_date DATETIME,
+                    recipients_count INTEGER,
+                    FOREIGN KEY (admin_id) REFERENCES users (user_id)
+                )
+                ''')
+                
+                # جدول سجلات النشاط
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS activity_logs (
+                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    action TEXT,
+                    timestamp DATETIME,
+                    details TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+                ''')
+                
+                conn.commit()
+                logger.info("✅ قاعدة البيانات مهيأة وجاهزة")
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في تهيئة قاعدة البيانات: {e}")
+    
+    # ==================== دوال المستخدمين ====================
+    def add_or_update_user(self, user_id, username, first_name, last_name=None):
+        """إضافة أو تحديث مستخدم"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # تحقق إذا كان المستخدم موجوداً
+                cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+                existing_user = cursor.fetchone()
+                
+                current_time = datetime.now().isoformat()
+                
+                if existing_user:
+                    # تحديث المستخدم الموجود
+                    cursor.execute('''
+                    UPDATE users 
+                    SET username = ?, first_name = ?, last_name = ?, last_active = ?
+                    WHERE user_id = ?
+                    ''', (username, first_name, last_name, current_time, user_id))
+                    
+                    # زيادة عداد الرسائل
+                    cursor.execute('''
+                    UPDATE users 
+                    SET message_count = message_count + 1 
+                    WHERE user_id = ?
+                    ''', (user_id,))
+                    
+                else:
+                    # إضافة مستخدم جديد
+                    cursor.execute('''
+                    INSERT INTO users 
+                    (user_id, username, first_name, last_name, join_date, last_active, message_count)
+                    VALUES (?, ?, ?, ?, ?, ?, 1)
+                    ''', (user_id, username, first_name, last_name, current_time, current_time))
+                
+                conn.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في إضافة/تحديث المستخدم: {e}")
+            return False
+    
+    def get_user(self, user_id):
+        """الحصول على معلومات مستخدم"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+                user = cursor.fetchone()
+                return dict(user) if user else None
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب بيانات المستخدم: {e}")
+            return None
+    
+    def get_all_users(self):
+        """الحصول على جميع المستخدمين"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM users ORDER BY join_date DESC")
+                users = cursor.fetchall()
+                return [dict(user) for user in users]
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب جميع المستخدمين: {e}")
+            return []
+    
+    def get_users_count(self):
+        """الحصول على عدد المستخدمين"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) as count FROM users")
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب عدد المستخدمين: {e}")
+            return 0
+    
+    def get_active_users_count(self, days=7):
+        """الحصول على عدد المستخدمين النشطين خلال الأيام المحددة"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cutoff_date = datetime.now().isoformat()  # سنضبط هذا لاحقاً
+                cursor.execute('''
+                SELECT COUNT(*) as count FROM users 
+                WHERE last_active >= datetime('now', ?)
+                ''', (f'-{days} days',))
+                result = cursor.fetchone()
+                return result['count'] if result else 0
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب المستخدمين النشطين: {e}")
+            return 0
+    
+    # ==================== دوال الإذاعة ====================
+    def add_broadcast(self, admin_id, message_text, recipients_count):
+        """تسجيل إذاعة جديدة"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                current_time = datetime.now().isoformat()
+                
+                cursor.execute('''
+                INSERT INTO broadcasts (admin_id, message_text, sent_date, recipients_count)
+                VALUES (?, ?, ?, ?)
+                ''', (admin_id, message_text, current_time, recipients_count))
+                
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            logger.error(f"❌ خطأ في تسجيل الإذاعة: {e}")
+            return None
+    
+    def get_broadcasts(self, limit=10):
+        """الحصول على آخر الإذاعات"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                SELECT b.*, u.first_name as admin_name 
+                FROM broadcasts b
+                LEFT JOIN users u ON b.admin_id = u.user_id
+                ORDER BY sent_date DESC
+                LIMIT ?
+                ''', (limit,))
+                broadcasts = cursor.fetchall()
+                return [dict(broadcast) for broadcast in broadcasts]
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب الإذاعات: {e}")
+            return []
+    
+    # ==================== دوال الإحصائيات ====================
+    def get_stats(self):
+        """الحصول على إحصائيات شاملة"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                stats = {}
+                
+                # عدد المستخدمين الكلي
+                cursor.execute("SELECT COUNT(*) as count FROM users")
+                stats['total_users'] = cursor.fetchone()['count']
+                
+                # عدد المستخدمين اليوم
+                cursor.execute("SELECT COUNT(*) as count FROM users WHERE date(join_date) = date('now')")
+                stats['new_users_today'] = cursor.fetchone()['count']
+                
+                # عدد الرسائل الكلي
+                cursor.execute("SELECT SUM(message_count) as total FROM users")
+                result = cursor.fetchone()
+                stats['total_messages'] = result['total'] if result['total'] else 0
+                
+                # عدد الإذاعات
+                cursor.execute("SELECT COUNT(*) as count FROM broadcasts")
+                stats['total_broadcasts'] = cursor.fetchone()['count']
+                
+                # المستخدمين الأكثر نشاطاً
+                cursor.execute('''
+                SELECT first_name, message_count 
+                FROM users 
+                ORDER BY message_count DESC 
+                LIMIT 5
+                ''')
+                stats['top_users'] = [dict(row) for row in cursor.fetchall()]
+                
+                return stats
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب الإحصائيات: {e}")
+            return {}
+    
+    # ==================== دوال النشاط ====================
+    def log_activity(self, user_id, action, details=None):
+        """تسجيل نشاط المستخدم"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                current_time = datetime.now().isoformat()
+                
+                cursor.execute('''
+                INSERT INTO activity_logs (user_id, action, timestamp, details)
+                VALUES (?, ?, ?, ?)
+                ''', (user_id, action, current_time, details))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"❌ خطأ في تسجيل النشاط: {e}")
+            return False
+
+# إنشاء كائن قاعدة بيانات عالمي
+db = Database()
