@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 venv/
 .env.local
+*.db
+*.sqlite
+bot_database.db
