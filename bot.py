@@ -1,11 +1,12 @@
 import os
 import logging
-import threading
-import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
+import uvicorn
+from fastapi import FastAPI
+from threading import Thread
+import asyncio
 
 # تحميل المتغيرات البيئية
 load_dotenv()
@@ -17,97 +18,106 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ==================== FastAPI للـ Healthcheck ====================
+app = FastAPI(title="Telegram Bot Healthcheck")
+
+@app.get("/")
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "telegram-bot"}
+
+def run_fastapi():
+    """تشغيل FastAPI server للـ healthcheck"""
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
 # ==================== إعدادات النظام الإداري ====================
 def get_admin_ids():
-    """جلب قائمة معرفات المشرفين من متغير البيئة"""
     admin_ids_str = os.getenv("ADMIN_IDS", "")
     if admin_ids_str:
         try:
             return [int(admin_id.strip()) for admin_id in admin_ids_str.split(",")]
         except ValueError:
-            logger.error("❌ خطأ في تنسيق ADMIN_IDS في ملف .env")
+            logger.error("❌ خطأ في تنسيق ADMIN_IDS")
             return []
     return []
 
-# قائمة المشرفين (سيتم تحميلها عند التشغيل)
 ADMIN_IDS = get_admin_ids()
 
 def is_admin(user_id: int) -> bool:
-    """التحقق مما إذا كان المستخدم مشرفاً"""
-    result = user_id in ADMIN_IDS
-    logger.info(f"🔍 التحقق من صلاحيات {user_id}: {result}")
-    return result
+    return user_id in ADMIN_IDS
 
 async def admin_only(func):
-    """ديكوراتور للتحقق من صلاحيات المشرف"""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if not is_admin(user_id):
             await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
-            logger.warning(f"محاولة غير مصرح بها: المستخدم {user_id} حاول استخدام أمر المشرفين")
             return
         return await func(update, context)
     return wrapper
 
-# ==================== HTTP Server للـ Healthcheck ====================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/health' or self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'OK')
-            logger.debug(f"✅ Healthcheck request from {self.client_address[0]}")
-        else:
-            self.send_response(404)
-            self.end_headers()
-    
-    def log_message(self, format, *args):
-        # تقليل السجلات HTTP
-        pass
-
-def run_health_server():
-    """تشغيل خادم HTTP بسيط للـ healthcheck"""
-    try:
-        port = int(os.getenv("PORT", 8080))
-        server = HTTPServer(('0.0.0.0', port), HealthHandler)
-        logger.info(f"🌐 خادم الـ healthcheck يعمل على المنفذ {port}")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"❌ خطأ في خادم healthcheck: {e}")
-
-# ==================== أوامر البوت الأساسية ====================
+# ==================== أوامر البوت ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """الترحيب بالمستخدم"""
     user = update.effective_user
-    await update.message.reply_text(
-        f"🚀 مرحباً {user.first_name}!\n"
-        f"البوت يعمل على Railway بنجاح!\n\n"
-        f"معرفك: {user.id}"
-    )
+    await update.message.reply_text(f"🚀 مرحباً {user.first_name}!\nالبوت يعمل!")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض رسالة المساعدة"""
     help_text = """
-🎯 **الأوامر المتاحة:**
-
-👤 **للمستخدمين:**
+🎯 **الأوامر:**
 /start - بدء التشغيل
-/help - عرض هذه الرسالة
+/help - المساعدة
 /status - حالة البوت
-
-👑 **للمشرفين:**
-/admin - القائمة الإدارية
-/stats - إحصائيات المستخدمين
-/broadcast - إرسال رسالة للجميع (رد على رسالة)
-/users - عرض عدد المستخدمين
+/admin - للمشرفين
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض حالة البوت"""
     await update.message.reply_text("✅ البوت يعمل بشكل طبيعي!")
 
+@admin_only
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"👑 لوحة المشرفين\nعدد المشرفين: {len(ADMIN_IDS)}", parse_mode='Markdown')
+
+# ==================== التشغيل الرئيسي ====================
+def setup_handlers(application):
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("admin", admin_panel))
+
+def run_bot():
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN غير معين")
+        return
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    setup_handlers(application)
+    
+    logger.info("🤖 بدأ تشغيل بوت تيليجرام...")
+    application.run_polling(drop_pending_updates=True)
+
+def main():
+    logger.info("=" * 50)
+    logger.info("🚀 بدء تشغيل البوت على Railway")
+    logger.info(f"🔑 BOT_TOKEN: {'✅' if os.getenv('BOT_TOKEN') else '❌'}")
+    logger.info(f"👑 ADMIN_IDS: {ADMIN_IDS}")
+    logger.info("=" * 50)
+    
+    # بدء FastAPI في thread منفصل
+    fastapi_thread = Thread(target=run_fastapi, daemon=True)
+    fastapi_thread.start()
+    logger.info("✅ بدأ خادم FastAPI للـ healthcheck")
+    
+    # انتظر قليلاً لبدء FastAPI
+    import time
+    time.sleep(5)
+    
+    # بدء بوت تيليجرام
+    run_bot()
+
+if __name__ == "__main__":
+    main()
 # ==================== أوامر المشرفين ====================
 @admin_only
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
