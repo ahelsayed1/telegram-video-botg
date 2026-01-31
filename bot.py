@@ -1,7 +1,7 @@
 import os
 import logging
-import asyncio
-from threading import Thread
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -34,13 +34,8 @@ ADMIN_IDS = get_admin_ids()
 
 def is_admin(user_id: int) -> bool:
     """التحقق مما إذا كان المستخدم مشرفاً"""
-    # لأغراض التصحيح
-    logger.info(f"🔍 التحقق من صلاحيات المستخدم {user_id}")
-    logger.info(f"📋 قائمة المشرفين: {ADMIN_IDS}")
-    
     result = user_id in ADMIN_IDS
-    logger.info(f"✅ النتيجة: {result}")
-    
+    logger.info(f"🔍 التحقق من صلاحيات {user_id}: {result}")
     return result
 
 async def admin_only(func):
@@ -62,6 +57,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
             self.wfile.write(b'OK')
+            logger.debug(f"✅ Healthcheck request from {self.client_address[0]}")
         else:
             self.send_response(404)
             self.end_headers()
@@ -72,10 +68,13 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def run_health_server():
     """تشغيل خادم HTTP بسيط للـ healthcheck"""
-    port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), HealthHandler)
-    logger.info(f"🌐 خادم الـ healthcheck يعمل على المنفذ {port}")
-    server.serve_forever()
+    try:
+        port = int(os.getenv("PORT", 8080))
+        server = HTTPServer(('0.0.0.0', port), HealthHandler)
+        logger.info(f"🌐 خادم الـ healthcheck يعمل على المنفذ {port}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"❌ خطأ في خادم healthcheck: {e}")
 
 # ==================== أوامر البوت الأساسية ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,6 +142,112 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_to_broadcast = update.message.reply_to_message
     
     await update.message.reply_text(
+        "📢 **تم استلام الرسالة للإذاعة**\n"
+        f"📝 النص: {message_to_broadcast.text[:50]}...\n\n"
+        "✅ نظام الإذاعة جاهز - سيتم تفعيله مع قاعدة البيانات"
+    )
+
+@admin_only
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض إحصائيات النظام"""
+    stats_text = """
+📊 **إحصائيات النظام**
+
+👥 **المستخدمون:**
+- المشرفين: {} مشرف
+- المستخدمين الكلي: قريباً مع قاعدة البيانات
+
+⚙️ **النظام:**
+- حالة البوت: ✅ يعمل
+- حالة الخادم: ✅ نشط
+- الإصدار: v1.0
+
+💾 **الذاكرة:**
+- الاستخدام: قريباً
+""".format(len(ADMIN_IDS))
+    
+    await update.message.reply_text(stats_text, parse_mode='Markdown')
+
+@admin_only
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض معلومات المستخدمين"""
+    await update.message.reply_text(
+        "👥 **نظام المستخدمين:**\n\n"
+        f"✅ عدد المشرفين: {len(ADMIN_IDS)}\n"
+        f"📋 قائمة المشرفين: {ADMIN_IDS}\n\n"
+        "🎯 **الخطوة التالية:** إضافة قاعدة بيانات SQLite"
+    )
+
+# ==================== الوظائف الرئيسية ====================
+def setup_handlers(application):
+    """إعداد جميع handlers"""
+    
+    # الأوامر الأساسية
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status))
+    
+    # أوامر المشرفين
+    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("broadcast", broadcast_message))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("users", users_command))
+
+def run_bot():
+    """تشغيل بوت تليجرام"""
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN غير معين")
+        return
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # إضافة handlers
+    setup_handlers(application)
+    
+    # تسجيل معلومات التشغيل
+    logger.info(f"🤖 بدأ تشغيل بوت تليجرام...")
+    logger.info(f"👑 عدد المشرفين: {len(ADMIN_IDS)}")
+    if ADMIN_IDS:
+        logger.info(f"🔑 معرفات المشرفين: {ADMIN_IDS}")
+    
+    application.run_polling(drop_pending_updates=True)
+
+def main():
+    """الدالة الرئيسية"""
+    # تسجيل معلومات البدء
+    logger.info("=" * 50)
+    logger.info("🚀 بدء تشغيل البوت...")
+    logger.info(f"🔑 BOT_TOKEN موجود: {'✅' if os.getenv('BOT_TOKEN') else '❌'}")
+    logger.info(f"👑 ADMIN_IDS: {os.getenv('ADMIN_IDS', 'غير معين')}")
+    logger.info(f"✅ تم تحميل {len(ADMIN_IDS)} مشرف: {ADMIN_IDS}")
+    logger.info("=" * 50)
+    
+    # التحقق من إعداد المشرفين
+    if not ADMIN_IDS:
+        logger.warning("⚠️ لا توجد معرفات مشرفين محددة. استخدم ADMIN_IDS في متغيرات Railway")
+    
+    # بدء خادم HTTP للـ healthcheck في thread منفصل
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info("✅ بدأ خادم الـ healthcheck في الخلفية")
+    
+    # تأكد من بدء الخادم (مهم لـ Railway)
+    time.sleep(3)
+    
+    # التحقق من وجود BOT_TOKEN
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    if not BOT_TOKEN:
+        logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
+        return
+    
+    # بدء بوت تليجرام
+    logger.info("🚀 بدء تشغيل بوت تليجرام الرئيسي...")
+    run_bot()
+
+if __name__ == "__main__":
+    main()    await update.message.reply_text(
         "📢 **تم استلام الرسالة للإذاعة**\n"
         f"📝 النص: {message_to_broadcast.text[:50]}...\n\n"
         "✅ نظام الإذاعة جاهز - سيتم تفعيله مع قاعدة البيانات"
