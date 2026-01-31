@@ -1,11 +1,9 @@
 import os
 import logging
-import threading
-import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
+import threading
 
 # تحميل المتغيرات البيئية
 load_dotenv()
@@ -19,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 # ==================== إعدادات النظام الإداري ====================
 def get_admin_ids():
-    """جلب قائمة معرفات المشرفين من متغير البيئة"""
     admin_ids_str = os.getenv("ADMIN_IDS", "")
     if admin_ids_str:
         try:
@@ -32,11 +29,9 @@ def get_admin_ids():
 ADMIN_IDS = get_admin_ids()
 
 def is_admin(user_id: int) -> bool:
-    """التحقق مما إذا كان المستخدم مشرفاً"""
     return user_id in ADMIN_IDS
 
 async def admin_only(func):
-    """ديكوراتور للتحقق من صلاحيات المشرف"""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if not is_admin(user_id):
@@ -44,34 +39,6 @@ async def admin_only(func):
             return
         return await func(update, context)
     return wrapper
-
-# ==================== HTTP Server مبسط جداً ====================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path in ['/', '/health']:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'OK')
-        else:
-            self.send_response(404)
-            self.end_headers()
-    
-    def log_message(self, format, *args):
-        pass  # تعطيل السجلات
-
-def run_health_server():
-    """تشغيل خادم HTTP للـ healthcheck"""
-    try:
-        port = int(os.getenv("PORT", 8080))
-        # استخدم '' بدلاً من '0.0.0.0' لتفادي المشاكل
-        server = HTTPServer(('', port), HealthHandler)
-        logger.info(f"✅ Healthcheck server started on port {port}")
-        print(f"✅ Healthcheck server started on port {port}")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"❌ Healthcheck error: {e}")
-        print(f"❌ Healthcheck error: {e}")
 
 # ==================== أوامر البوت ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,6 +88,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+# ==================== Healthcheck بسيط جداً ====================
+# لا نحتاج خادم HTTP معقد، سنستخدم بوت تيليجرام نفسه
+
 # ==================== الإعداد الرئيسي ====================
 def setup_handlers(application):
     application.add_handler(CommandHandler("start", start))
@@ -140,9 +110,29 @@ def run_bot():
     setup_handlers(application)
     
     logger.info("🤖 بدأ تشغيل بوت تيليجرام...")
+    logger.info(f"👑 عدد المشرفين: {len(ADMIN_IDS)}")
+    
+    # طباعة رسالة بدء للمساعدة في debugging
+    print("=" * 50)
+    print("🚀 Telegram Bot Started Successfully!")
+    print(f"🤖 Bot is running and polling...")
+    print(f"👑 Admins: {ADMIN_IDS}")
+    print("=" * 50)
+    
     application.run_polling(drop_pending_updates=True)
 
 def main():
+    """الدالة الرئيسية"""
+    # تسجيل البداية
+    print("🚀 Starting Telegram Bot on Railway...")
+    print(f"🔑 BOT_TOKEN: {'SET' if os.getenv('BOT_TOKEN') else 'MISSING'}")
+    print(f"👑 ADMIN_IDS: {os.getenv('ADMIN_IDS', 'Not set')}")
+    
+    # بدء البوت مباشرة بدون healthcheck معقد
+    run_bot()
+
+if __name__ == "__main__":
+    main()def main():
     """الدالة الرئيسية - نسخة مبسطة جداً"""
     # تسجيل البداية
     print("=" * 50)
