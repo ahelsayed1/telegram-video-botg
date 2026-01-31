@@ -1,12 +1,11 @@
 import os
 import logging
-import sqlite3
 import asyncio
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 
 # تحميل المتغيرات البيئية
@@ -19,130 +18,398 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-print("=" * 50)
-print("🚀 بدء تشغيل البوت على Railway...")
-print("=" * 50)
-
-# ==================== قاعدة البيانات ====================
-class Database:
-    def __init__(self, db_name="bot_database.db"):
-        self.db_name = db_name
-        self.init_database()
+# ==================== HTTP Server للـ Healthcheck ====================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health' or self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
     
-    def get_connection(self):
-        conn = sqlite3.connect(self.db_name)
-        conn.row_factory = sqlite3.Row
-        return conn
-    
-    def init_database(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    last_name TEXT,
-                    join_date DATETIME,
-                    message_count INTEGER DEFAULT 0,
-                    last_active DATETIME,
-                    is_admin BOOLEAN DEFAULT 0
-                )
-                ''')
-                
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS broadcasts (
-                    broadcast_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_id INTEGER,
-                    message_text TEXT,
-                    sent_date DATETIME,
-                    recipients_count INTEGER,
-                    success_count INTEGER DEFAULT 0,
-                    failed_count INTEGER DEFAULT 0
-                )
-                ''')
-                
-                conn.commit()
-                print("✅ قاعدة البيانات مهيأة وجاهزة")
-                
-        except Exception as e:
-            print(f"❌ خطأ في قاعدة البيانات: {e}")
+    def log_message(self, format, *args):
+        # تقليل السجلات HTTP
+        pass
 
-    def add_or_update_user(self, user_id, username, first_name, last_name=None):
+def run_health_server():
+    """تشغيل خادم HTTP بسيط للـ healthcheck"""
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    logger.info(f"🌐 خادم الـ healthcheck يعمل على المنفذ {port}")
+    server.serve_forever()
+
+# ==================== نظام المشرفين ====================
+def get_admin_ids():
+    """جلب قائمة معرفات المشرفين من متغير البيئة"""
+    admin_ids_str = os.getenv("ADMIN_IDS", "")
+    if admin_ids_str:
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-                existing_user = cursor.fetchone()
-                
-                current_time = datetime.now().isoformat()
-                
-                if existing_user:
-                    cursor.execute('''
-                    UPDATE users 
-                    SET username = ?, first_name = ?, last_name = ?, last_active = ?
-                    WHERE user_id = ?
-                    ''', (username, first_name, last_name, current_time, user_id))
-                    
-                    cursor.execute('''
-                    UPDATE users 
-                    SET message_count = message_count + 1 
-                    WHERE user_id = ?
-                    ''', (user_id,))
-                    
-                else:
-                    cursor.execute('''
-                    INSERT INTO users 
-                    (user_id, username, first_name, last_name, join_date, last_active, message_count)
-                    VALUES (?, ?, ?, ?, ?, ?, 1)
-                    ''', (user_id, username, first_name, last_name, current_time, current_time))
-                
-                conn.commit()
-                return True
-                
-        except Exception as e:
-            print(f"❌ خطأ في إضافة مستخدم: {e}")
+            return [int(admin_id.strip()) for admin_id in admin_ids_str.split(",")]
+        except ValueError:
+            logger.error("❌ خطأ في تنسيق ADMIN_IDS")
+            return []
+    return []
+
+# قائمة المشرفين (سيتم تحميلها عند التشغيل)
+ADMIN_IDS = get_admin_ids()
+
+def is_admin(user_id: int) -> bool:
+    """التحقق مما إذا كان المستخدم مشرفاً"""
+    return user_id in ADMIN_IDS
+
+# ==================== قاعدة البيانات المبسطة ====================
+import sqlite3
+from datetime import datetime
+
+class SimpleDB:
+    def __init__(self):
+        self.init_db()
+    
+    def init_db(self):
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            join_date TEXT
+        )
+        ''')
+        conn.commit()
+        conn.close()
+    
+    def add_user(self, user_id, username, first_name):
+        try:
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+            INSERT OR IGNORE INTO users (user_id, username, first_name, join_date)
+            VALUES (?, ?, ?, ?)
+            ''', (user_id, username, first_name, datetime.now().isoformat()))
+            conn.commit()
+            conn.close()
+            return True
+        except:
             return False
-
+    
     def get_all_users(self):
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM users ORDER BY join_date DESC")
-                users = cursor.fetchall()
-                return [dict(user) for user in users]
-        except Exception as e:
-            print(f"❌ خطأ في جلب المستخدمين: {e}")
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id, username, first_name, join_date FROM users')
+            users = cursor.fetchall()
+            conn.close()
+            return users
+        except:
             return []
-
+    
     def get_users_count(self):
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) as count FROM users")
-                result = cursor.fetchone()
-                return result[0] if result else 0
-        except Exception as e:
-            print(f"❌ خطأ في جلب عدد المستخدمين: {e}")
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM users')
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except:
             return 0
 
-    def add_broadcast(self, admin_id, message_text, recipients_count, success_count, failed_count):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                current_time = datetime.now().isoformat()
-                
-                cursor.execute('''
-                INSERT INTO broadcasts 
-                (admin_id, message_text, sent_date, recipients_count, success_count, failed_count)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''', (admin_id, message_text, current_time, recipients_count, success_count, failed_count))
-                
-                conn.commit()
-                return cursor.lastrowid
+db = SimpleDB()
+
+# ==================== أوامر البوت الأساسية ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الترحيب بالمستخدم"""
+    user = update.effective_user
+    
+    # تسجيل المستخدم في قاعدة البيانات
+    db.add_user(user.id, user.username, user.first_name)
+    
+    await update.message.reply_text(
+        f"🚀 مرحباً {user.first_name}!\n"
+        f"البوت يعمل على Railway بنجاح!\n\n"
+        f"معرفك: {user.id}"
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض رسالة المساعدة"""
+    help_text = """
+🎯 **الأوامر المتاحة:**
+
+👤 **للمستخدمين:**
+/start - بدء التشغيل
+/help - المساعدة
+/status - حالة البوت
+
+👑 **للمشرفين:**
+/admin - القائمة الإدارية
+/stats - إحصائيات المستخدمين
+/broadcast - إرسال رسالة للجميع (رد على رسالة)
+/users - عرض عدد المستخدمين
+"""
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض حالة البوت"""
+    await update.message.reply_text("✅ البوت يعمل بشكل طبيعي!")
+
+# ==================== أوامر المشرفين ====================
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """لوحة تحكم المشرفين"""
+    user_id = update.effective_user.id
+    
+    # التحقق من الصلاحيات
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        logger.warning(f"محاولة وصول غير مصرح: المستخدم {user_id} حاول استخدام /admin")
+        return
+    
+    users_count = db.get_users_count()
+    
+    admin_commands = f"""
+👑 **لوحة تحكم المشرفين**
+
+📊 /stats - إحصائيات النظام
+📢 /broadcast - إرسال رسالة للجميع (رد على رسالة)
+👥 /users - عرض عدد المستخدمين
+
+🔢 **المعلومات الحالية:**
+- عدد المشرفين: {len(ADMIN_IDS)}
+- عدد المستخدمين: {users_count}
+- النظام: ✅ نشط
+"""
+    
+    await update.message.reply_text(admin_commands, parse_mode='Markdown')
+    logger.info(f"المشرف {user_id} فتح لوحة التحكم")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إحصائيات النظام"""
+    user_id = update.effective_user.id
+    
+    # التحقق من الصلاحيات
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    users_count = db.get_users_count()
+    
+    stats_text = f"""
+📊 **إحصائيات النظام**
+
+👥 **المستخدمون:**
+- العدد الكلي: {users_count} مستخدم
+
+👑 **المشرفون:**
+- العدد: {len(ADMIN_IDS)} مشرف
+- القائمة: {ADMIN_IDS}
+
+💾 **قاعدة البيانات:**
+- SQLite: ✅ نشطة
+"""
+    
+    await update.message.reply_text(stats_text, parse_mode='Markdown')
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض معلومات المستخدمين"""
+    user_id = update.effective_user.id
+    
+    # التحقق من الصلاحيات
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    users_count = db.get_users_count()
+    
+    await update.message.reply_text(
+        f"👥 **نظام المستخدمين**\n\n"
+        f"✅ عدد المستخدمين: {users_count}\n\n"
+        "📋 **لجلب قائمة المستخدمين:**\n"
+        "سيتم تطويرها في المرحلة التالية",
+        parse_mode='Markdown'
+    )
+
+# ==================== نظام الإذاعة المحسن ====================
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إرسال رسالة للجميع"""
+    user_id = update.effective_user.id
+    
+    # التحقق من الصلاحيات
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    # التحقق إذا كان الرد على رسالة
+    if update.message.reply_to_message:
+        message = update.message.reply_to_message.text
+        if not message:
+            message = "📎 (رسالة ميديا)"
+        
+        users_count = db.get_users_count()
+        
+        # زر التأكيد
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ نعم، أرسل للجميع", callback_data="confirm_broadcast"),
+                InlineKeyboardButton("❌ إلغاء", callback_data="cancel_broadcast")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"📢 **تأكيد الإذاعة**\n\n"
+            f"📝 الرسالة: {message[:200]}\n\n"
+            f"👥 عدد المستهدفين: {users_count} مستخدم\n\n"
+            f"⚠️ **هل تريد الإرسال فعلياً؟**",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+        # حفظ الرسالة مؤقتاً
+        context.user_data['broadcast_message'] = message
+        
+    else:
+        await update.message.reply_text(
+            "📝 **طريقة استخدام /broadcast:**\n\n"
+            "1. أرسل الرسالة التي تريد إذاعتها\n"
+            "2. رد على الرسالة بالأمر /broadcast\n\n"
+            "✅ **سيظهر زر تأكيد للإرسال**",
+            parse_mode='Markdown'
+        )
+
+async def handle_broadcast_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة ضغطات أزرار الإذاعة"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    # التحقق من الصلاحيات
+    if not is_admin(user_id):
+        await query.edit_message_text("⛔ ليس لديك صلاحية للقيام بهذا!")
+        return
+    
+    if query.data == "confirm_broadcast":
+        # جلب الرسالة المحفوظة
+        message = context.user_data.get('broadcast_message')
+        if not message:
+            await query.edit_message_text("❌ لم تعد الرسالة موجودة!")
+            return
+        
+        # جلب جميع المستخدمين
+        all_users = db.get_all_users()
+        users_count = len(all_users)
+        
+        await query.edit_message_text(
+            f"🔄 **جاري الإرسال...**\n\n"
+            f"📝 إلى {users_count} مستخدم\n"
+            f"⏳ يرجى الانتظار...",
+            parse_mode='Markdown'
+        )
+        
+        success_count = 0
+        failed_count = 0
+        
+        # إرسال الرسالة لكل مستخدم
+        for user in all_users:
+            user_id_db = user[0]  # user_id هو العمود الأول
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id_db,
+                    text=f"📢 **إذاعة من المشرف**\n\n{message}\n\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                )
+                success_count += 1
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"فشل إرسال للمستخدم {user_id_db}: {e}")
+            
+            # تأخير بسيط لتجنب rate limits
+            await asyncio.sleep(0.1)
+        
+        # حساب النسبة المئوية
+        success_rate = (success_count / users_count * 100) if users_count > 0 else 0
+        
+        await query.edit_message_text(
+            f"✅ **تم إكمال الإذاعة!**\n\n"
+            f"📊 **الإحصائيات:**\n"
+            f"• ✅ تم الإرسال بنجاح: {success_count} مستخدم\n"
+            f"• ❌ فشل الإرسال: {failed_count} مستخدم\n"
+            f"• 👥 الإجمالي: {users_count} مستخدم\n"
+            f"• 📈 نسبة النجاح: {success_rate:.1f}%\n\n"
+            f"🎯 **تم إرسال الرسالة للجميع**",
+            parse_mode='Markdown'
+        )
+        
+        # تنظيف البيانات المؤقتة
+        if 'broadcast_message' in context.user_data:
+            del context.user_data['broadcast_message']
+    
+    elif query.data == "cancel_broadcast":
+        await query.edit_message_text("❌ تم إلغاء الإذاعة.")
+        
+        # تنظيف البيانات المؤقتة
+        if 'broadcast_message' in context.user_data:
+            del context.user_data['broadcast_message']
+
+# ==================== الوظائف الرئيسية ====================
+def setup_handlers(application):
+    """إعداد جميع handlers"""
+    
+    # الأوامر الأساسية
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status))
+    
+    # أوامر المشرفين
+    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("users", users_command))
+    
+    # معالج أزرار الإذاعة
+    application.add_handler(CallbackQueryHandler(handle_broadcast_callback))
+
+def run_bot():
+    """تشغيل بوت تليجرام"""
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN غير معين")
+        return
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # إضافة handlers
+    setup_handlers(application)
+    
+    # تسجيل معلومات التشغيل
+    logger.info(f"🤖 بدأ تشغيل بوت تليجرام...")
+    logger.info(f"👑 عدد المشرفين: {len(ADMIN_IDS)}")
+    if ADMIN_IDS:
+        logger.info(f"🔑 معرفات المشرفين: {ADMIN_IDS}")
+    
+    application.run_polling(drop_pending_updates=True)
+
+def main():
+    """الدالة الرئيسية"""
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not BOT_TOKEN:
+        logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
+        return
+    
+    # بدء خادم HTTP للـ healthcheck في thread منفصل
+    health_thread = Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info("✅ بدأ خادم الـ healthcheck")
+    
+    # بدء بوت تليجرام
+    run_bot()
+
+if __name__ == "__main__":
+    main()                return cursor.lastrowid
         except Exception as e:
             print(f"❌ خطأ في تسجيل الإذاعة: {e}")
             return None
