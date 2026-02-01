@@ -1,10 +1,6 @@
 import os
 import logging
 import asyncio
-import threading
-import time
-import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -21,81 +17,6 @@ logger = logging.getLogger(__name__)
 
 # ==================== استيراد قاعدة البيانات ====================
 from database import db
-
-# ==================== HTTP Server للـ Healthcheck ====================
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/health' or self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'OK')
-        else:
-            self.send_response(404)
-            self.end_headers()
-    
-    def log_message(self, format, *args):
-        pass
-
-def run_health_server():
-    port = int(os.getenv("PORT", 8080))
-    max_retries = 5
-    retry_delay = 2
-    
-    for attempt in range(max_retries):
-        try:
-            server = HTTPServer(('0.0.0.0', port), HealthHandler)
-            logger.info(f"🌐 خادم الـ healthcheck يعمل على المنفذ {port}")
-            server.timeout = 5
-            server.serve_forever()
-            break
-        except OSError as e:
-            if "Address already in use" in str(e):
-                logger.warning(f"⚠️  المنفذ {port} محجوز، محاولة استخدام المنفذ {port + 1}")
-                port += 1
-            else:
-                logger.error(f"❌ خطأ في خادم healthcheck (المحاولة {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    logger.info(f"🔄 إعادة المحاولة خلال {retry_delay} ثواني...")
-                    time.sleep(retry_delay)
-                else:
-                    logger.error("❌ فشل في تشغيل خادم healthcheck بعد عدة محاولات")
-        except Exception as e:
-            logger.error(f"❌ خطأ غير متوقع في خادم healthcheck: {e}")
-            break
-
-def start_health_server():
-    """بدء خادم healthcheck مع معالجة أفضل للأخطاء"""
-    try:
-        health_thread = threading.Thread(target=run_health_server, daemon=True)
-        health_thread.start()
-        
-        time.sleep(3)
-        
-        port = int(os.getenv("PORT", 8080))
-        check_port = port
-        
-        for i in range(3):
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
-                result = sock.connect_ex(('127.0.0.1', check_port))
-                sock.close()
-                
-                if result == 0:
-                    logger.info(f"✅ خادم healthcheck يعمل بنجاح على المنفذ {check_port}")
-                    return True
-                else:
-                    check_port += 1
-            except Exception as e:
-                logger.debug(f"فحص المنفذ {check_port} فشل: {e}")
-                check_port += 1
-        
-        logger.warning("⚠️  خادم healthcheck لا يستجيب، ولكن سنستمر في تشغيل البوت")
-        return False
-    except Exception as e:
-        logger.error(f"❌ خطأ في بدء خادم healthcheck: {e}")
-        return False
 
 # ==================== نظام المشرفين ====================
 def get_admin_ids():
@@ -117,6 +38,7 @@ def is_admin(user_id: int) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
+    # تسجيل المستخدم في قاعدة البيانات
     db.add_or_update_user(
         user_id=user.id,
         username=user.username,
@@ -189,11 +111,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
         return
     
-    stats = db.get_stats()
-    users_count = db.get_users_count()
-    
-    stats_text = f"""
-📊 **إحصائيات النظام الحقيقية**
+    try:
+        stats = db.get_stats()
+        users_count = db.get_users_count()
+        
+        # إذا كانت الإحصائيات فارغة، حاول جمعها مرة أخرى
+        if not stats:
+            logger.warning("الإحصائيات فارغة، محاولة جمعها مرة أخرى")
+            stats = db.get_stats() or {}
+        
+        stats_text = f"""
+📊 **إحصائيات النظام**
 
 👥 **المستخدمون:**
 - العدد الكلي: {users_count} مستخدم
@@ -205,15 +133,24 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 **المشرفون:**
 - العدد: {len(ADMIN_IDS)} مشرف
-- القائمة: {ADMIN_IDS}
 
 💾 **قاعدة البيانات:**
 - ✅ SQLite نشطة
 - 📁 الملف: {db.db_name}
 """
-    
-    await update.message.reply_text(stats_text, parse_mode='Markdown')
-    logger.info(f"المشرف {user_id} طلب الإحصائيات")
+        
+        await update.message.reply_text(stats_text, parse_mode='Markdown')
+        logger.info(f"المشرف {user_id} طلب الإحصائيات")
+        
+    except Exception as e:
+        logger.error(f"❌ خطأ في عرض الإحصائيات: {e}")
+        await update.message.reply_text(
+            f"📊 **إحصائيات مبسطة:**\n\n"
+            f"👥 عدد المستخدمين: {db.get_users_count()}\n"
+            f"👑 عدد المشرفين: {len(ADMIN_IDS)}\n"
+            f"📁 قاعدة البيانات: ✅ نشطة\n\n"
+            f"⚠️ *ملاحظة: حدث خطأ في جلب بعض الإحصائيات التفصيلية*"
+        )
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -236,6 +173,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         
+        # حفظ الرسالة مؤقتاً في context
         context.user_data['pending_broadcast'] = message
     else:
         await update.message.reply_text(
@@ -268,12 +206,14 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ لا يوجد مستخدمين لإرسال الإذاعة لهم!")
         return
     
+    # حفظ الإذاعة في قاعدة البيانات
     broadcast_id = db.add_broadcast(user_id, message, users_count)
     
     if not broadcast_id:
         await update.message.reply_text("❌ فشل في حفظ الإذاعة!")
         return
     
+    # 🔥 **الإرسال الفعلي للمستخدمين**
     sent_count = 0
     failed_count = 0
     failed_users = []
@@ -283,6 +223,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
         f"⏳ قد يستغرق بعض الوقت..."
     )
     
+    # إرسال لكل مستخدم
     for user in users:
         try:
             await context.bot.send_message(
@@ -291,12 +232,14 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
             )
             sent_count += 1
             
+            # تسجيل النشاط
             db.log_activity(
                 user_id=user['user_id'],
                 action="broadcast_received",
                 details=f"broadcast_id={broadcast_id}"
             )
             
+            # تأخير بسيط لتجنب rate limits
             if sent_count % 10 == 0:
                 await asyncio.sleep(1)
                 
@@ -305,6 +248,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
             failed_users.append(user['user_id'])
             logger.error(f"❌ فشل إرسال للإذاعة {broadcast_id} للمستخدم {user['user_id']}: {e}")
     
+    # تحديث عدد المستلمين الفعلي
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -314,6 +258,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
         ''', (sent_count, broadcast_id))
         conn.commit()
     
+    # إرسال تقرير للمشرف
     report = f"""
 ✅ **تم إرسال الإذاعة بنجاح!**
 
@@ -328,16 +273,18 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
     
     if failed_count > 0:
         report += f"\n📛 **المستخدمين الذين فشل الإرسال لهم:**\n"
-        for user_id in failed_users[:10]:
+        for user_id in failed_users[:10]:  # عرض أول 10 فقط
             report += f"- {user_id}\n"
         if failed_count > 10:
             report += f"... و {failed_count - 10} آخرين"
     
     await update.message.reply_text(report, parse_mode='Markdown')
     
+    # حذف الرسالة المعلقة
     del context.user_data['pending_broadcast']
 
 async def broadcast_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض إحصائيات إذاعة محددة"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -405,6 +352,7 @@ async def users_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"المشرف {user_id} طلب قائمة المستخدمين")
 
 async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تتبع ردود المستخدمين على الإذاعات"""
     if update.message.reply_to_message and update.message.reply_to_message.text:
         replied_text = update.message.reply_to_message.text
         if "إذاعة من الإدارة:" in replied_text:
@@ -418,6 +366,7 @@ async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_T
                     details=f"reply: {update.message.text[:50]}"
                 )
                 
+                # إرسال إشعار للمشرف
                 admin_message = f"""
 🔄 **رد على إذاعة:**
 👤 المستخدم: {user['first_name']} (@{user['username'] or 'بدون'})
@@ -425,6 +374,7 @@ async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_T
 💬 الرد: {update.message.text[:100]}
 """
                 
+                # إرسال لجميع المشرفين
                 for admin_id in ADMIN_IDS:
                     try:
                         await context.bot.send_message(
@@ -447,6 +397,7 @@ def setup_handlers(application):
     application.add_handler(CommandHandler("broadcaststats", broadcast_stats_command))
     application.add_handler(CommandHandler("userslist", users_list_command))
     
+    # 🔥 إضافة معالج للردود على الرسائل
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_broadcast_reply
@@ -477,12 +428,7 @@ def main():
         logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
         return
     
-    logger.info("🚀 بدء تشغيل النظام...")
-    
-    if not start_health_server():
-        logger.warning("⚠️  خادم healthcheck واجه مشكلة، ولكن سنستمر في تشغيل البوت")
-    
-    time.sleep(5)
+    logger.info("🚀 بدء تشغيل البوت...")
     
     try:
         run_bot()
