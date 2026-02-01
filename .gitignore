@@ -1,8 +1,13 @@
 .env
-_pycache_
-*.рус
+__pycache__/
+*.pyc
 venv/
+env/
 .env.local
 *.db
 *.sqlite
 bot_database.db
+backup_*.db
+*.log
+*.bak
+.DS_Store
