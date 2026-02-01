@@ -159,7 +159,6 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cutoff_date = datetime.now().isoformat()
                 cursor.execute('''
                 SELECT COUNT(*) as count FROM users 
                 WHERE last_active >= datetime('now', ?)
@@ -244,11 +243,13 @@ class Database:
                 
                 # عدد المستخدمين الكلي
                 cursor.execute("SELECT COUNT(*) as count FROM users")
-                stats['total_users'] = cursor.fetchone()['count']
+                result = cursor.fetchone()
+                stats['total_users'] = result['count'] if result else 0
                 
                 # عدد المستخدمين اليوم
                 cursor.execute("SELECT COUNT(*) as count FROM users WHERE date(join_date) = date('now')")
-                stats['new_users_today'] = cursor.fetchone()['count']
+                result = cursor.fetchone()
+                stats['new_users_today'] = result['count'] if result else 0
                 
                 # عدد الرسائل الكلي
                 cursor.execute("SELECT SUM(message_count) as total FROM users")
@@ -257,16 +258,8 @@ class Database:
                 
                 # عدد الإذاعات
                 cursor.execute("SELECT COUNT(*) as count FROM broadcasts")
-                stats['total_broadcasts'] = cursor.fetchone()['count']
-                
-                # المستخدمين الأكثر نشاطاً
-                cursor.execute('''
-                SELECT first_name, message_count 
-                FROM users 
-                ORDER BY message_count DESC 
-                LIMIT 5
-                ''')
-                stats['top_users'] = [dict(row) for row in cursor.fetchall()]
+                result = cursor.fetchone()
+                stats['total_broadcasts'] = result['count'] if result else 0
                 
                 return stats
                 
