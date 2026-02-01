@@ -89,7 +89,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /admin - لوحة التحكم
 /stats - إحصائيات النظام
 /broadcast - إرسال رسالة للجميع
+/sendbroadcast - إرسال الرسالة المعلقة
 /userslist - عرض قائمة المستخدمين
+/broadcaststats <رقم> - إحصائيات إذاعة محددة
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -112,7 +114,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📊 /stats - إحصائيات النظام
 📢 /broadcast - إرسال رسالة للجميع
+📤 /sendbroadcast - إرسال الرسالة المعلقة
 👥 /userslist - عرض المستخدمين ({users_count} مستخدم)
+📈 /broadcaststats <رقم> - إحصائيات إذاعة
 
 🔢 **معلومات النظام:**
 - عدد المشرفين: {len(ADMIN_IDS)}
@@ -143,6 +147,303 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📢 **الإذاعات:**
 - عدد الإذاعات: {stats.get('total_broadcasts', 0)}
+
+👑 **المشرفون:**
+- العدد: {len(ADMIN_IDS)} مشرف
+- القائمة: {ADMIN_IDS}
+
+💾 **قاعدة البيانات:**
+- ✅ SQLite نشطة
+- 📁 الملف: {db.db_name}
+"""
+    
+    await update.message.reply_text(stats_text, parse_mode='Markdown')
+    logger.info(f"المشرف {user_id} طلب الإحصائيات")
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    if update.message.reply_to_message:
+        message = update.message.reply_to_message.text or "رسالة ميديا"
+        users_count = db.get_users_count()
+        
+        await update.message.reply_text(
+            f"📢 **رسالة الإذاعة:**\n"
+            f"'{message[:50]}...'\n\n"
+            f"👥 عدد المستهدفين: {users_count} مستخدم\n"
+            f"✅ جاهزة للإرسال\n\n"
+            f"ℹ️ *لإرسال فعلياً:*\n"
+            f"أرسل /sendbroadcast",
+            parse_mode='Markdown'
+        )
+        
+        # حفظ الرسالة مؤقتاً في context
+        context.user_data['pending_broadcast'] = message
+    else:
+        await update.message.reply_text(
+            "📝 **طريقة استخدام /broadcast:**\n"
+            "1. أرسل الرسالة التي تريد إذاعتها\n"
+            "2. رد على الرسالة بالأمر /broadcast\n\n"
+            "✅ **المميزات:**\n"
+            "- الإرسال لجميع المستخدمين\n"
+            "- تتبع من استلم الرسالة\n"
+            "- إحصائيات مفصلة",
+            parse_mode='Markdown'
+        )
+
+async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    if 'pending_broadcast' not in context.user_data:
+        await update.message.reply_text("❌ لا توجد رسالة معلقة للإذاعة!\nاستخدم /broadcast أولاً")
+        return
+    
+    message = context.user_data['pending_broadcast']
+    users = db.get_all_users()
+    users_count = len(users)
+    
+    if users_count == 0:
+        await update.message.reply_text("❌ لا يوجد مستخدمين لإرسال الإذاعة لهم!")
+        return
+    
+    # حفظ الإذاعة في قاعدة البيانات
+    broadcast_id = db.add_broadcast(user_id, message, users_count)
+    
+    if not broadcast_id:
+        await update.message.reply_text("❌ فشل في حفظ الإذاعة!")
+        return
+    
+    # 🔥 **الإرسال الفعلي للمستخدمين**
+    sent_count = 0
+    failed_count = 0
+    failed_users = []
+    
+    await update.message.reply_text(
+        f"📤 جاري إرسال الإذاعة لـ {users_count} مستخدم...\n"
+        f"⏳ قد يستغرق بعض الوقت..."
+    )
+    
+    # إرسال لكل مستخدم
+    for user in users:
+        try:
+            await context.bot.send_message(
+                chat_id=user['user_id'],
+                text=f"📢 **إذاعة من الإدارة:**\n\n{message}"
+            )
+            sent_count += 1
+            
+            # تسجيل النشاط
+            db.log_activity(
+                user_id=user['user_id'],
+                action="broadcast_received",
+                details=f"broadcast_id={broadcast_id}"
+            )
+            
+            # تأخير بسيط لتجنب rate limits
+            if sent_count % 10 == 0:
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            failed_count += 1
+            failed_users.append(user['user_id'])
+            logger.error(f"❌ فشل إرسال للإذاعة {broadcast_id} للمستخدم {user['user_id']}: {e}")
+    
+    # تحديث عدد المستلمين الفعلي
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+        UPDATE broadcasts 
+        SET recipients_count = ?
+        WHERE broadcast_id = ?
+        ''', (sent_count, broadcast_id))
+        conn.commit()
+    
+    # إرسال تقرير للمشرف
+    report = f"""
+✅ **تم إرسال الإذاعة بنجاح!**
+
+📊 **التقرير:**
+🆔 رقم الإذاعة: {broadcast_id}
+👥 العدد الكلي: {users_count} مستخدم
+✅ تم الإرسال بنجاح: {sent_count}
+❌ فشل الإرسال: {failed_count}
+📝 نسبة النجاح: {round((sent_count/users_count)*100, 2)}%
+
+"""
+    
+    if failed_count > 0:
+        report += f"\n📛 **المستخدمين الذين فشل الإرسال لهم:**\n"
+        for user_id in failed_users[:10]:  # عرض أول 10 فقط
+            report += f"- {user_id}\n"
+        if failed_count > 10:
+            report += f"... و {failed_count - 10} آخرين"
+    
+    await update.message.reply_text(report, parse_mode='Markdown')
+    
+    # حذف الرسالة المعلقة
+    del context.user_data['pending_broadcast']
+
+async def broadcast_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض إحصائيات إذاعة محددة"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    if context.args and context.args[0].isdigit():
+        broadcast_id = int(context.args[0])
+        stats = db.get_broadcast_stats(broadcast_id)
+        
+        if stats:
+            stats_text = f"""
+📊 **إحصائيات الإذاعة #{broadcast_id}**
+
+📝 **الرسالة:** {stats['message_text'][:100]}...
+
+👤 **المرسل:** {stats.get('admin_name', 'غير معروف')}
+📅 **تاريخ الإرسال:** {stats['sent_date'][:16]}
+
+📈 **الإحصائيات:**
+👥 العدد المستهدف: {stats['recipients_count']}
+✅ تم التسليم: {stats.get('delivered_count', 0)}
+💬 الردود المستلمة: {stats.get('replied_count', 0)}
+
+💯 **نسبة التفاعل:** {round((stats.get('replied_count', 0)/max(stats['recipients_count'], 1))*100, 2)}%
+"""
+            await update.message.reply_text(stats_text, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(f"❌ لم يتم العثور على إذاعة برقم #{broadcast_id}")
+    else:
+        await update.message.reply_text("📌 استخدام: /broadcaststats <رقم_الإذاعة>\nمثال: /broadcaststats 1")
+
+async def users_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    users = db.get_all_users()
+    users_count = len(users)
+    
+    if users_count == 0:
+        await update.message.reply_text("📭 لا يوجد مستخدمين مسجلين بعد.")
+        return
+    
+    display_users = users[:10]
+    
+    users_text = f"👥 **المستخدمون المسجلون** ({users_count} مستخدم)\n\n"
+    
+    for i, user in enumerate(display_users, 1):
+        users_text += f"{i}. {user['first_name']}"
+        if user['username']:
+            users_text += f" (@{user['username']})"
+        users_text += f" - ID: {user['user_id']}\n"
+        join_date = user['join_date'][:10] if user['join_date'] else "غير معروف"
+        users_text += f"   📅 انضم: {join_date}\n"
+        users_text += f"   💬 رسائل: {user['message_count']}\n\n"
+    
+    if users_count > 10:
+        users_text += f"\n📋 عرض 10 من أصل {users_count} مستخدم\n"
+        users_text += "استخدم /userslist2 للصفحة التالية"
+    
+    await update.message.reply_text(users_text, parse_mode='Markdown')
+    logger.info(f"المشرف {user_id} طلب قائمة المستخدمين")
+
+async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تتبع ردود المستخدمين على الإذاعات"""
+    if update.message.reply_to_message and update.message.reply_to_message.text:
+        replied_text = update.message.reply_to_message.text
+        if "إذاعة من الإدارة:" in replied_text:
+            user_id = update.effective_user.id
+            user = db.get_user(user_id)
+            
+            if user:
+                db.log_activity(
+                    user_id=user_id,
+                    action="broadcast_replied",
+                    details=f"reply: {update.message.text[:50]}"
+                )
+                
+                # إرسال إشعار للمشرف
+                admin_message = f"""
+🔄 **رد على إذاعة:**
+👤 المستخدم: {user['first_name']} (@{user['username'] or 'بدون'})
+🆔 المعرف: {user_id}
+💬 الرد: {update.message.text[:100]}
+"""
+                
+                # إرسال لجميع المشرفين
+                for admin_id in ADMIN_IDS:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=admin_message
+                        )
+                    except Exception as e:
+                        logger.error(f"فشل إرسال إشعار للمشرف {admin_id}: {e}")
+
+# ==================== الوظائف الرئيسية ====================
+def setup_handlers(application):
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status))
+    
+    application.add_handler(CommandHandler("admin", admin_panel))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("sendbroadcast", send_broadcast_command))
+    application.add_handler(CommandHandler("broadcaststats", broadcast_stats_command))
+    application.add_handler(CommandHandler("userslist", users_list_command))
+    
+    # 🔥 إضافة معالج للردود على الرسائل
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, 
+        handle_broadcast_reply
+    ))
+
+def run_bot():
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN غير معين")
+        return
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    setup_handlers(application)
+    
+    logger.info(f"🤖 بدأ تشغيل بوت تليجرام...")
+    logger.info(f"👑 عدد المشرفين: {len(ADMIN_IDS)}")
+    
+    users_count = db.get_users_count()
+    logger.info(f"👥 عدد المستخدمين المسجلين: {users_count}")
+    
+    application.run_polling(drop_pending_updates=True)
+
+def main():
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not BOT_TOKEN:
+        logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
+        return
+    
+    health_thread = Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info("✅ بدأ خادم الـ healthcheck")
+    
+    run_bot()
+
+if __name__ == "__main__":
+    main()- عدد الإذاعات: {stats.get('total_broadcasts', 0)}
 
 👑 **المشرفون:**
 - العدد: {len(ADMIN_IDS)} مشرف
