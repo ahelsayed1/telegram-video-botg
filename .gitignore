@@ -1,4 +1,8 @@
 .env
-__pycache__/
-*.pyc
+_pycache_
+*.рус
 venv/
+.env.local
+*.db
+*.sqlite
+bot_database.db
