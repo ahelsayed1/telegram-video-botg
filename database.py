@@ -62,6 +62,13 @@ class Database:
                 )
                 ''')
                 
+                # إنشاء الفهارس لتحسين الأداء
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_join_date ON users(join_date DESC)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active DESC)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_broadcasts_date ON broadcasts(sent_date DESC)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_user_action ON activity_logs(user_id, action)')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_logs(timestamp DESC)')
+                
                 conn.commit()
                 logger.info("✅ قاعدة البيانات مهيأة وجاهزة")
                 
@@ -152,7 +159,7 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cutoff_date = datetime.now().isoformat()  # سنضبط هذا لاحقاً
+                cutoff_date = datetime.now().isoformat()
                 cursor.execute('''
                 SELECT COUNT(*) as count FROM users 
                 WHERE last_active >= datetime('now', ?)
@@ -199,6 +206,32 @@ class Database:
         except Exception as e:
             logger.error(f"❌ خطأ في جلب الإذاعات: {e}")
             return []
+    
+    def get_broadcast_stats(self, broadcast_id):
+        """الحصول على إحصائيات إذاعة محددة"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                SELECT b.*, u.first_name as admin_name,
+                       (SELECT COUNT(*) FROM activity_logs 
+                        WHERE action = 'broadcast_received' 
+                        AND details LIKE ?) as delivered_count,
+                       (SELECT COUNT(*) FROM activity_logs 
+                        WHERE action = 'broadcast_replied' 
+                        AND details LIKE ?) as replied_count
+                FROM broadcasts b
+                LEFT JOIN users u ON b.admin_id = u.user_id
+                WHERE b.broadcast_id = ?
+                ''', (f'%broadcast_id={broadcast_id}%', f'%broadcast_id={broadcast_id}%', broadcast_id))
+                
+                broadcast = cursor.fetchone()
+                return dict(broadcast) if broadcast else None
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب إحصائيات الإذاعة: {e}")
+            return None
     
     # ==================== دوال الإحصائيات ====================
     def get_stats(self):
@@ -259,6 +292,40 @@ class Database:
         except Exception as e:
             logger.error(f"❌ خطأ في تسجيل النشاط: {e}")
             return False
+    
+    # ==================== دوال النسخ الاحتياطي ====================
+    def backup_database(self, backup_name=None):
+        """إنشاء نسخة احتياطية من قاعدة البيانات"""
+        import shutil
+        from datetime import datetime
+        
+        try:
+            if backup_name is None:
+                backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+            
+            shutil.copy2(self.db_name, backup_name)
+            logger.info(f"✅ تم إنشاء نسخة احتياطية: {backup_name}")
+            return backup_name
+        except Exception as e:
+            logger.error(f"❌ خطأ في إنشاء النسخة الاحتياطية: {e}")
+            return None
+    
+    def cleanup_old_logs(self, days=30):
+        """تنظيف سجلات النشاط القديمة"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                DELETE FROM activity_logs 
+                WHERE timestamp < datetime('now', ?)
+                ''', (f'-{days} days',))
+                deleted_count = cursor.rowcount
+                conn.commit()
+                logger.info(f"✅ تم تنظيف {deleted_count} سجل نشاط قديم")
+                return deleted_count
+        except Exception as e:
+            logger.error(f"❌ خطأ في تنظيف السجلات: {e}")
+            return 0
 
 # إنشاء كائن قاعدة بيانات عالمي
 db = Database()
