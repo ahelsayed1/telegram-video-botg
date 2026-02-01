@@ -4,8 +4,7 @@ import asyncio
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
 # تحميل المتغيرات البيئية
@@ -41,108 +40,57 @@ def run_health_server():
     logger.info(f"🌐 خادم الـ healthcheck يعمل على المنفذ {port}")
     server.serve_forever()
 
-# ==================== نظام المشرفين ====================
-def get_admin_ids():
-    """جلب قائمة معرفات المشرفين من متغير البيئة"""
-    admin_ids_str = os.getenv("ADMIN_IDS", "")
-    if admin_ids_str:
-        try:
-            return [int(admin_id.strip()) for admin_id in admin_ids_str.split(",")]
-        except ValueError:
-            logger.error("❌ خطأ في تنسيق ADMIN_IDS")
-            return []
-    return []
-
-# قائمة المشرفين (سيتم تحميلها عند التشغيل)
-ADMIN_IDS = get_admin_ids()
-
-def is_admin(user_id: int) -> bool:
-    """التحقق مما إذا كان المستخدم مشرفاً"""
-    return user_id in ADMIN_IDS
-
-# ==================== قاعدة البيانات المبسطة ====================
-import sqlite3
-from datetime import datetime
-
-class SimpleDB:
-    def __init__(self):
-        self.init_db()
-    
-    def init_db(self):
-        conn = sqlite3.connect('users.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            join_date TEXT
-        )
-        ''')
-        conn.commit()
-        conn.close()
-    
-    def add_user(self, user_id, username, first_name):
-        try:
-            conn = sqlite3.connect('users.db')
-            cursor = conn.cursor()
-            cursor.execute('''
-            INSERT OR IGNORE INTO users (user_id, username, first_name, join_date)
-            VALUES (?, ?, ?, ?)
-            ''', (user_id, username, first_name, datetime.now().isoformat()))
-            conn.commit()
-            conn.close()
-            return True
-        except:
-            return False
-    
-    def get_all_users(self):
-        try:
-            conn = sqlite3.connect('users.db')
-            cursor = conn.cursor()
-            cursor.execute('SELECT user_id, username, first_name, join_date FROM users')
-            users = cursor.fetchall()
-            conn.close()
-            return users
-        except:
-            return []
-    
-    def get_users_count(self):
-        try:
-            conn = sqlite3.connect('users.db')
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM users')
-            count = cursor.fetchone()[0]
-            conn.close()
-            return count
-        except:
-            return 0
-
-db = SimpleDB()
-
-# ==================== أوامر البوت الأساسية ====================
+# ==================== بوت تليجرام ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """الترحيب بالمستخدم"""
-    user = update.effective_user
-    
-    # تسجيل المستخدم في قاعدة البيانات
-    db.add_user(user.id, user.username, user.first_name)
-    
-    await update.message.reply_text(
-        f"🚀 مرحباً {user.first_name}!\n"
-        f"البوت يعمل على Railway بنجاح!\n\n"
-        f"معرفك: {user.id}"
-    )
+    await update.message.reply_text("🚀 البوت يعمل على Railway بنجاح!")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض رسالة المساعدة"""
     help_text = """
-🎯 **الأوامر المتاحة:**
-
-👤 **للمستخدمين:**
 /start - بدء التشغيل
 /help - المساعدة
 /status - حالة البوت
+"""
+    await update.message.reply_text(help_text)
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("✅ البوت يعمل بشكل طبيعي!")
+
+def run_bot():
+    """تشغيل بوت تليجرام"""
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN غير معين")
+        return
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # إضافة handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status))
+    
+    logger.info("🤖 بدأ تشغيل بوت تليجرام...")
+    application.run_polling(drop_pending_updates=True)
+
+def main():
+    """الدالة الرئيسية"""
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not BOT_TOKEN:
+        logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
+        return
+    
+    # بدء خادم HTTP للـ healthcheck في thread منفصل
+    health_thread = Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info("✅ بدأ خادم الـ healthcheck")
+    
+    # بدء بوت تليجرام
+    run_bot()
+
+if __name__ == "__main__":
+    main()/status - حالة البوت
 
 👑 **للمشرفين:**
 /admin - القائمة الإدارية
