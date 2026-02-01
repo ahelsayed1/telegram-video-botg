@@ -17,170 +17,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== قاعدة البيانات ====================
-import sqlite3
-from datetime import datetime
-
-class Database:
-    def __init__(self, db_name="bot_database.db"):
-        self.db_name = db_name
-        self.init_database()
-    
-    def get_connection(self):
-        conn = sqlite3.connect(self.db_name)
-        conn.row_factory = sqlite3.Row
-        return conn
-    
-    def init_database(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # جدول المستخدمين
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    last_name TEXT,
-                    join_date DATETIME,
-                    message_count INTEGER DEFAULT 0,
-                    last_active DATETIME,
-                    is_admin BOOLEAN DEFAULT 0
-                )
-                ''')
-                
-                # جدول الإذاعات
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS broadcasts (
-                    broadcast_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_id INTEGER,
-                    message_text TEXT,
-                    sent_date DATETIME,
-                    recipients_count INTEGER
-                )
-                ''')
-                
-                conn.commit()
-                logger.info("✅ قاعدة البيانات مهيأة وجاهزة")
-                
-        except Exception as e:
-            logger.error(f"❌ خطأ في تهيئة قاعدة البيانات: {e}")
-    
-    def add_or_update_user(self, user_id, username, first_name, last_name=None):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-                existing_user = cursor.fetchone()
-                
-                current_time = datetime.now().isoformat()
-                
-                if existing_user:
-                    cursor.execute('''
-                    UPDATE users 
-                    SET username = ?, first_name = ?, last_name = ?, last_active = ?
-                    WHERE user_id = ?
-                    ''', (username, first_name, last_name, current_time, user_id))
-                    
-                    cursor.execute('''
-                    UPDATE users 
-                    SET message_count = message_count + 1 
-                    WHERE user_id = ?
-                    ''', (user_id,))
-                    
-                else:
-                    cursor.execute('''
-                    INSERT INTO users 
-                    (user_id, username, first_name, last_name, join_date, last_active, message_count)
-                    VALUES (?, ?, ?, ?, ?, ?, 1)
-                    ''', (user_id, username, first_name, last_name, current_time, current_time))
-                
-                conn.commit()
-                return True
-                
-        except Exception as e:
-            logger.error(f"❌ خطأ في إضافة/تحديث المستخدم: {e}")
-            return False
-    
-    def get_user(self, user_id):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-                user = cursor.fetchone()
-                return dict(user) if user else None
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب بيانات المستخدم: {e}")
-            return None
-    
-    def get_all_users(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM users ORDER BY join_date DESC")
-                users = cursor.fetchall()
-                return [dict(user) for user in users]
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب جميع المستخدمين: {e}")
-            return []
-    
-    def get_users_count(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) as count FROM users")
-                result = cursor.fetchone()
-                return result[0] if result else 0
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب عدد المستخدمين: {e}")
-            return 0
-    
-    def get_stats(self):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                stats = {}
-                
-                cursor.execute("SELECT COUNT(*) as count FROM users")
-                stats['total_users'] = cursor.fetchone()[0]
-                
-                cursor.execute("SELECT COUNT(*) as count FROM users WHERE date(join_date) = date('now')")
-                stats['new_users_today'] = cursor.fetchone()[0]
-                
-                cursor.execute("SELECT SUM(message_count) as total FROM users")
-                result = cursor.fetchone()
-                stats['total_messages'] = result[0] if result[0] else 0
-                
-                cursor.execute("SELECT COUNT(*) as count FROM broadcasts")
-                stats['total_broadcasts'] = cursor.fetchone()[0]
-                
-                return stats
-                
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب الإحصائيات: {e}")
-            return {}
-    
-    def add_broadcast(self, admin_id, message_text, recipients_count):
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                current_time = datetime.now().isoformat()
-                
-                cursor.execute('''
-                INSERT INTO broadcasts (admin_id, message_text, sent_date, recipients_count)
-                VALUES (?, ?, ?, ?)
-                ''', (admin_id, message_text, current_time, recipients_count))
-                
-                conn.commit()
-                return cursor.lastrowid
-        except Exception as e:
-            logger.error(f"❌ خطأ في تسجيل الإذاعة: {e}")
-            return None
-
-# كائن قاعدة البيانات العالمي
-db = Database()
+# ==================== استيراد قاعدة البيانات ====================
+from database import db  # ✅ استيراد من الملف المنفصل
 
 # ==================== HTTP Server للـ Healthcheck ====================
 class HealthHandler(BaseHTTPRequestHandler):
@@ -312,7 +150,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 💾 **قاعدة البيانات:**
 - ✅ SQLite نشطة
-- 📁 الملف: bot_database.db
+- 📁 الملف: {db.db_name}
 """
     
     await update.message.reply_text(stats_text, parse_mode='Markdown')
@@ -366,9 +204,6 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
     
     message = context.user_data['pending_broadcast']
     users_count = db.get_users_count()
-    
-    # هنا سيكون كود الإرسال الفعلي للمستخدمين
-    # حالياً، نحفظها في قاعدة البيانات فقط
     
     broadcast_id = db.add_broadcast(user_id, message, users_count)
     
