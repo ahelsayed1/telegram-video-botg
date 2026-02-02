@@ -4,6 +4,7 @@ import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
+from datetime import datetime
 
 # تحميل المتغيرات البيئية
 load_dotenv()
@@ -63,7 +64,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /status - حالة البوت
 
 👑 **للمشرفين:**
-/admin - لوحة التحكم
+/admin - لوحة تحكم المشرفين
 /stats - إحصائيات النظام الكاملة
 /broadcast - إرسال رسالة للجميع
 /sendbroadcast - إرسال الرسالة المعلقة
@@ -105,7 +106,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"المشرف {user_id} فتح لوحة التحكم")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض إحصائيات النظام الكاملة - النسخة المصححة"""
+    """عرض إحصائيات النظام الكاملة - الإصدار المصحح"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -115,97 +116,62 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"📊 المشرف {user_id} طلب الإحصائيات")
         
-        # جمع البيانات بشكل منفصل لتفادي الأخطاء
-        users_count = db.get_users_count()
-        active_users = db.get_active_users_count(days=1)
+        # ✅ **استخدام الدالة الجديدة get_stats_simple**
+        stats = db.get_stats_simple()
         
-        # جلب الإحصائيات من قاعدة البيانات
-        stats = db.get_stats()
-        
-        # إذا كانت الإحصائيات فارغة أو غير صالحة
-        if not stats or not isinstance(stats, dict):
-            logger.warning("الإحصائيات فارغة أو غير صالحة، استخدام القيم الافتراضية")
+        # إذا كانت الإحصائيات فارغة
+        if not stats:
             stats = {
-                'total_users': users_count,
-                'new_users_today': 0,
+                'total_users': db.get_users_count(),
                 'total_messages': 0,
                 'total_broadcasts': 0,
-                'last_broadcast_id': None,
-                'total_logs': 0,
-                'top_users': []
+                'new_users_today': 0,
+                'last_broadcast_id': None
             }
         
-        # التأكد من وجود القيم الأساسية
-        total_messages = stats.get('total_messages', 0)
-        total_broadcasts = stats.get('total_broadcasts', 0)
-        new_users_today = stats.get('new_users_today', 0)
-        last_broadcast_id = stats.get('last_broadcast_id')
-        
-        # بدء بناء رسالة الإحصائيات
+        # بناء رسالة الإحصائيات
         stats_text = f"""
 📊 **إحصائيات النظام الكاملة**
 
 👥 **المستخدمون:**
-- العدد الكلي: {users_count} مستخدم
-- المستخدمين النشطين اليوم: {active_users}
-- المستخدمين الجدد اليوم: {new_users_today}
-- الرسائل الكلية: {total_messages:,}
+- العدد الكلي: {stats['total_users']} مستخدم
+- المستخدمين الجدد اليوم: {stats['new_users_today']}
+- الرسائل الكلية: {stats['total_messages']:,}
 
 📢 **الإذاعات:**
-- عدد الإذاعات المرسلة: {total_broadcasts}
+- عدد الإذاعات المرسلة: {stats['total_broadcasts']}
 """
         
-        # إضافة آخر إذاعة إذا موجودة
-        if last_broadcast_id:
-            stats_text += f"- آخر إذاعة: #{last_broadcast_id}\n"
+        if stats.get('last_broadcast_id'):
+            stats_text += f"- آخر إذاعة: #{stats['last_broadcast_id']}\n"
         
-        # إضافة معلومات المشرفين
         stats_text += f"""
 👑 **المشرفون:**
 - العدد: {len(ADMIN_IDS)} مشرف
-"""
-        
-        # إضافة المستخدمين الأكثر نشاطاً إذا متوفرين
-        top_users = stats.get('top_users', [])
-        if top_users:
-            stats_text += "\n🏆 **المستخدمون الأكثر نشاطاً:**\n"
-            for i, user in enumerate(top_users[:5], 1):
-                name = user.get('first_name', 'غير معروف')
-                messages = user.get('message_count', 0)
-                stats_text += f"{i}. {name} - {messages:,} رسالة\n"
-        
-        # إضافة معلومات قاعدة البيانات - ✅ **تم التصحيح هنا**
-        stats_text += f"""
+
 💾 **قاعدة البيانات:**
 - ✅ SQLite نشطة
 - 📁 الملف: {db.db_name}
+- 🕒 آخر تحديث: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
-        
-        # إضافة تاريخ آخر تحديث
-        from datetime import datetime
-        stats_text += f"- 🕒 آخر تحديث: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
         logger.info(f"✅ تم عرض الإحصائيات للمشرف {user_id}")
         
     except Exception as e:
-        logger.error(f"❌ خطأ كامل في عرض الإحصائيات: {e}", exc_info=True)
+        logger.error(f"❌ خطأ في عرض الإحصائيات: {e}")
         
-        # العرض المبسط في حالة الخطأ - ✅ **تم التصحيح هنا**
-        try:
-            fallback_text = f"""
+        # العرض المبسط في حالة الخطأ
+        fallback_text = f"""
 📊 **إحصائيات مبسطة:**
 
 👥 عدد المستخدمين: {db.get_users_count()}
 👑 عدد المشرفين: {len(ADMIN_IDS)}
 📁 قاعدة البيانات: ✅ نشطة
 
-⚠️ *جاري تحسين نظام الإحصائيات...*
+ℹ️ *البيانات الأساسية تعمل بشكل طبيعي*
 """
-            await update.message.reply_text(fallback_text, parse_mode='Markdown')
-        except Exception as fallback_error:
-            logger.error(f"❌ فشل حتى في العرض المبسط: {fallback_error}")
-            await update.message.reply_text("❌ حدث خطأ في النظام. جاري العمل على الإصلاح.")
+        await update.message.reply_text(fallback_text, parse_mode='Markdown')
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -268,7 +234,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ فشل في حفظ الإذاعة!")
         return
     
-    # 🔥 **الإرسال الفعلي للمستخدمين**
+    # 🔥 **الإرسال الفعلي للمستخدمين - بدون تصفية المرسل**
     sent_count = 0
     failed_count = 0
     failed_users = []
@@ -304,14 +270,17 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
             logger.error(f"❌ فشل إرسال للإذاعة {broadcast_id} للمستخدم {user['user_id']}: {e}")
     
     # تحديث عدد المستلمين الفعلي
-    with db.get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-        UPDATE broadcasts 
-        SET recipients_count = ?
-        WHERE broadcast_id = ?
-        ''', (sent_count, broadcast_id))
-        conn.commit()
+    try:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+            UPDATE broadcasts 
+            SET recipients_count = ?
+            WHERE broadcast_id = ?
+            ''', (sent_count, broadcast_id))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"❌ فشل تحديث عدد المستلمين: {e}")
     
     # إرسال تقرير للمشرف
     report = f"""
@@ -322,14 +291,14 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
 👥 العدد الكلي: {users_count} مستخدم
 ✅ تم الإرسال بنجاح: {sent_count}
 ❌ فشل الإرسال: {failed_count}
-📝 نسبة النجاح: {round((sent_count/users_count)*100, 2)}%
+📝 نسبة النجاح: {round((sent_count/users_count)*100, 2) if users_count > 0 else 0}%
 
 """
     
     if failed_count > 0:
         report += f"\n📛 **المستخدمين الذين فشل الإرسال لهم:**\n"
-        for user_id in failed_users[:10]:  # عرض أول 10 فقط
-            report += f"- {user_id}\n"
+        for failed_id in failed_users[:10]:  # عرض أول 10 فقط
+            report += f"- {failed_id}\n"
         if failed_count > 10:
             report += f"... و {failed_count - 10} آخرين"
     
@@ -356,15 +325,11 @@ async def broadcast_stats_command(update: Update, context: ContextTypes.DEFAULT_
 
 📝 **الرسالة:** {stats['message_text'][:100]}...
 
-👤 **المرسل:** {stats.get('admin_name', 'غير معروف')}
+👤 **المرسل:** المشرف {stats.get('admin_id', 'غير معروف')}
 📅 **تاريخ الإرسال:** {stats['sent_date'][:16]}
 
 📈 **الإحصائيات:**
 👥 العدد المستهدف: {stats['recipients_count']}
-✅ تم التسليم: {stats.get('delivered_count', 0)}
-💬 الردود المستلمة: {stats.get('replied_count', 0)}
-
-💯 **نسبة التفاعل:** {round((stats.get('replied_count', 0)/max(stats['recipients_count'], 1))*100, 2)}%
 """
             await update.message.reply_text(stats_text, parse_mode='Markdown')
         else:
@@ -452,7 +417,7 @@ def setup_handlers(application):
     application.add_handler(CommandHandler("broadcaststats", broadcast_stats_command))
     application.add_handler(CommandHandler("userslist", users_list_command))
     
-    # 🔥 إضافة معالج للردود على الرسائل
+    # إضافة معالج للردود على الرسائل
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_broadcast_reply
@@ -474,9 +439,9 @@ def run_bot():
     users_count = db.get_users_count()
     logger.info(f"👥 عدد المستخدمين المسجلين: {users_count}")
     
-    # تسجيل إحصائيات البدء
+    # تسجيل إحصائيات البدء - ✅ **استخدام get_stats_simple**
     try:
-        stats = db.get_stats()
+        stats = db.get_stats_simple()
         logger.info(f"📊 إحصائيات البدء: {stats}")
     except Exception as e:
         logger.warning(f"⚠️ لا يمكن جلب إحصائيات البدء: {e}")
