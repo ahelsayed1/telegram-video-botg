@@ -1,4 +1,4 @@
-# database.py
+# database.py - النسخة المصححة
 import sqlite3
 import logging
 from datetime import datetime
@@ -159,10 +159,11 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
                 cursor.execute('''
                 SELECT COUNT(*) as count FROM users 
-                WHERE last_active >= datetime('now', ?)
-                ''', (f'-{days} days',))
+                WHERE last_active >= ?
+                ''', (cutoff_date,))
                 result = cursor.fetchone()
                 return result['count'] if result else 0
         except Exception as e:
@@ -234,7 +235,7 @@ class Database:
     
     # ==================== دوال الإحصائيات ====================
     def get_stats(self):
-        """الحصول على إحصائيات شاملة"""
+        """الحصول على إحصائيات شاملة - النسخة المصححة"""
         try:
             logger.info("🔍 بدء جمع الإحصائيات...")
             with self.get_connection() as conn:
@@ -242,34 +243,53 @@ class Database:
                 
                 stats = {}
                 
-                # 1. عدد المستخدمين الكلي
-                cursor.execute("SELECT COUNT(*) as count FROM users")
+                # 1. عدد المستخدمين الكلي - نسخة مبسطة
+                cursor.execute("SELECT COUNT(*) as total_users FROM users")
                 result = cursor.fetchone()
-                stats['total_users'] = result['count'] if result and 'count' in result.keys() else 0
+                stats['total_users'] = result['total_users'] if result else 0
                 logger.info(f"👥 عدد المستخدمين: {stats['total_users']}")
                 
-                # 2. عدد المستخدمين الجدد اليوم
-                cursor.execute('''
-                SELECT COUNT(*) as count FROM users 
-                WHERE date(join_date) = date('now', 'localtime')
-                ''')
-                result = cursor.fetchone()
-                stats['new_users_today'] = result['count'] if result and 'count' in result.keys() else 0
+                # 2. عدد المستخدمين الجدد اليوم - نسخة محسنة
+                try:
+                    today = datetime.now().date().isoformat()
+                    cursor.execute('''
+                    SELECT COUNT(*) as new_users_today FROM users 
+                    WHERE date(join_date) >= date(?)
+                    ''', (today,))
+                    result = cursor.fetchone()
+                    stats['new_users_today'] = result['new_users_today'] if result else 0
+                except Exception as date_error:
+                    logger.warning(f"⚠️ خطأ في حساب المستخدمين الجدد: {date_error}")
+                    stats['new_users_today'] = 0
                 logger.info(f"🆕 مستخدمين جدد اليوم: {stats['new_users_today']}")
                 
                 # 3. عدد الرسائل الكلي
-                cursor.execute("SELECT COALESCE(SUM(message_count), 0) as total FROM users")
+                cursor.execute("SELECT COALESCE(SUM(message_count), 0) as total_messages FROM users")
                 result = cursor.fetchone()
-                stats['total_messages'] = result['total'] if result and 'total' in result.keys() else 0
+                stats['total_messages'] = result['total_messages'] if result else 0
                 logger.info(f"💬 عدد الرسائل: {stats['total_messages']}")
                 
                 # 4. عدد الإذاعات
-                cursor.execute("SELECT COUNT(*) as count FROM broadcasts")
+                cursor.execute("SELECT COUNT(*) as total_broadcasts FROM broadcasts")
                 result = cursor.fetchone()
-                stats['total_broadcasts'] = result['count'] if result and 'count' in result.keys() else 0
+                stats['total_broadcasts'] = result['total_broadcasts'] if result else 0
                 logger.info(f"📢 عدد الإذاعات: {stats['total_broadcasts']}")
                 
-                # 5. المستخدمين الأكثر نشاطاً (اختياري)
+                # 5. آخر إذاعة
+                cursor.execute('''
+                SELECT broadcast_id, sent_date FROM broadcasts 
+                ORDER BY sent_date DESC LIMIT 1
+                ''')
+                last_broadcast = cursor.fetchone()
+                stats['last_broadcast_id'] = last_broadcast['broadcast_id'] if last_broadcast else None
+                stats['last_broadcast_date'] = last_broadcast['sent_date'] if last_broadcast else None
+                
+                # 6. عدد سجلات النشاط
+                cursor.execute("SELECT COUNT(*) as total_logs FROM activity_logs")
+                result = cursor.fetchone()
+                stats['total_logs'] = result['total_logs'] if result else 0
+                
+                # 7. المستخدمين الأكثر نشاطاً
                 try:
                     cursor.execute('''
                     SELECT first_name, message_count 
@@ -278,7 +298,8 @@ class Database:
                     LIMIT 5
                     ''')
                     stats['top_users'] = [dict(row) for row in cursor.fetchall()]
-                except:
+                except Exception as top_users_error:
+                    logger.warning(f"⚠️ خطأ في جلب المستخدمين النشطين: {top_users_error}")
                     stats['top_users'] = []
                 
                 logger.info(f"✅ الإحصائيات المحسوبة بنجاح: {stats}")
@@ -292,6 +313,8 @@ class Database:
                 'new_users_today': 0,
                 'total_messages': 0,
                 'total_broadcasts': 0,
+                'last_broadcast_id': None,
+                'total_logs': 0,
                 'top_users': []
             }
     
@@ -336,10 +359,12 @@ class Database:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                from datetime import timedelta
+                cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
                 cursor.execute('''
                 DELETE FROM activity_logs 
-                WHERE timestamp < datetime('now', ?)
-                ''', (f'-{days} days',))
+                WHERE timestamp < ?
+                ''', (cutoff_date,))
                 deleted_count = cursor.rowcount
                 conn.commit()
                 logger.info(f"✅ تم تنظيف {deleted_count} سجل نشاط قديم")
@@ -347,6 +372,9 @@ class Database:
         except Exception as e:
             logger.error(f"❌ خطأ في تنظيف السجلات: {e}")
             return 0
+
+# إضافة import للـ timedelta في الأعلى
+from datetime import timedelta
 
 # إنشاء كائن قاعدة بيانات عالمي
 db = Database()
