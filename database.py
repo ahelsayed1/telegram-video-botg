@@ -1,4 +1,4 @@
-# database.py - النسخة النهائية مع دعم رسالة الترحيب القابلة للتعديل
+# database.py - النسخة النهائية الموثوقة
 import sqlite3
 import logging
 from datetime import datetime, timedelta
@@ -60,51 +60,11 @@ class Database:
                 )
                 ''')
                 
-                # جدول الإعدادات - الجديد
-                cursor.execute('''
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at TEXT
-                )
-                ''')
-                
-                # إضافة الإعدادات الافتراضية
-                self._add_default_settings(cursor)
-                
                 conn.commit()
-                logger.info("✅ قاعدة البيانات مهيأة وجاهزة")
+                logger.info("✅ قاعدة البيانات جاهزة")
                 
         except Exception as e:
             logger.error(f"❌ خطأ في تهيئة قاعدة البيانات: {e}")
-    
-    def _add_default_settings(self, cursor):
-        """إضافة الإعدادات الافتراضية"""
-        try:
-            # رسالة الترحيب الافتراضية
-            default_welcome = """🚀 مرحباً {first_name}!
-
-🎯 تم تسجيل دخولك في قاعدة البيانات بنجاح!
-
-📊 معلومات حسابك:
-🆔 المعرف: {user_id}
-👤 الاسم: {first_name} {last_name}
-📅 وقت التسجيل: {current_time}
-
-✅ استخدم /help لعرض الأوامر المتاحة"""
-            
-            # تحقق إذا كان الإعداد موجوداً بالفعل
-            cursor.execute("SELECT key FROM settings WHERE key = ?", ('welcome_message',))
-            if not cursor.fetchone():
-                current_time = datetime.now().isoformat()
-                cursor.execute('''
-                INSERT INTO settings (key, value, updated_at)
-                VALUES (?, ?, ?)
-                ''', ('welcome_message', default_welcome, current_time))
-                logger.info("✅ تم إضافة رسالة الترحيب الافتراضية")
-                
-        except Exception as e:
-            logger.error(f"❌ خطأ في إضافة الإعدادات الافتراضية: {e}")
     
     # ==================== دوال المستخدمين ====================
     def add_or_update_user(self, user_id, username, first_name, last_name=None):
@@ -142,7 +102,6 @@ class Database:
                     ''', (user_id, username, first_name, last_name, current_time, current_time))
                 
                 conn.commit()
-                logger.info(f"✅ تم إضافة/تحديث المستخدم: {user_id} - {first_name}")
                 return True
                 
         except Exception as e:
@@ -389,72 +348,6 @@ class Database:
         # نستخدم النسخة الموثوقة
         return self.get_stats_fixed()
     
-    # ==================== دوال الإعدادات ====================
-    def get_setting(self, key, default=None):
-        """الحصول على إعداد"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-                result = cursor.fetchone()
-                return result['value'] if result else default
-                
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب الإعداد {key}: {e}")
-            return default
-    
-    def set_setting(self, key, value):
-        """تعيين إعداد"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                current_time = datetime.now().isoformat()
-                
-                cursor.execute('''
-                INSERT OR REPLACE INTO settings (key, value, updated_at)
-                VALUES (?, ?, ?)
-                ''', (key, value, current_time))
-                
-                conn.commit()
-                logger.info(f"✅ تم حفظ الإعداد: {key} = {value[:50]}...")
-                return True
-                
-        except Exception as e:
-            logger.error(f"❌ خطأ في حفظ الإعداد {key}: {e}")
-            return False
-    
-    def get_welcome_message(self):
-        """الحصول على رسالة الترحيب"""
-        default_welcome = """🚀 مرحباً {first_name}!
-
-🎯 تم تسجيل دخولك في قاعدة البيانات بنجاح!
-
-📊 معلومات حسابك:
-🆔 المعرف: {user_id}
-👤 الاسم: {first_name} {last_name}
-📅 وقت التسجيل: {current_time}
-
-✅ استخدم /help لعرض الأوامر المتاحة"""
-        
-        return self.get_setting('welcome_message', default_welcome)
-    
-    def set_welcome_message(self, message):
-        """تعيين رسالة الترحيب"""
-        return self.set_setting('welcome_message', message)
-    
-    def get_all_settings(self):
-        """الحصول على جميع الإعدادات"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT key, value, updated_at FROM settings")
-                settings = cursor.fetchall()
-                return [dict(setting) for setting in settings]
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب جميع الإعدادات: {e}")
-            return []
-    
     # ==================== دوال النشاط ====================
     def log_activity(self, user_id, action, details=None):
         """تسجيل نشاط المستخدم"""
@@ -473,24 +366,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ خطأ في تسجيل النشاط: {e}")
             return False
-    
-    def get_recent_activities(self, limit=20):
-        """الحصول على آخر الأنشطة"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                SELECT a.*, u.first_name, u.username 
-                FROM activity_logs a
-                LEFT JOIN users u ON a.user_id = u.user_id
-                ORDER BY timestamp DESC
-                LIMIT ?
-                ''', (limit,))
-                activities = cursor.fetchall()
-                return [dict(activity) for activity in activities]
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب الأنشطة: {e}")
-            return []
     
     # ==================== دوال النسخ الاحتياطي ====================
     def backup_database(self, backup_name=None):
@@ -515,4 +390,40 @@ class Database:
                 cursor = conn.cursor()
                 cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
                 cursor.execute('''
- 
+                DELETE FROM activity_logs 
+                WHERE timestamp < ?
+                ''', (cutoff_date,))
+                deleted_count = cursor.rowcount
+                conn.commit()
+                logger.info(f"✅ تم تنظيف {deleted_count} سجل نشاط قديم")
+                return deleted_count
+        except Exception as e:
+            logger.error(f"❌ خطأ في تنظيف السجلات: {e}")
+            return 0
+    
+    def get_database_info(self):
+        """الحصول على معلومات عن قاعدة البيانات"""
+        try:
+            import os
+            info = {
+                'filename': self.db_name,
+                'exists': os.path.exists(self.db_name),
+                'size': 0,
+                'tables': []
+            }
+            
+            if info['exists']:
+                info['size'] = os.path.getsize(self.db_name)
+                
+                with self.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                    info['tables'] = [row[0] for row in cursor.fetchall()]
+            
+            return info
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب معلومات قاعدة البيانات: {e}")
+            return {'filename': self.db_name, 'exists': False}
+
+# إنشاء كائن قاعدة بيانات عالمي
+db = Database()
