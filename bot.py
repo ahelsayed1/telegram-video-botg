@@ -37,6 +37,7 @@ def is_admin(user_id: int) -> bool:
 
 # ==================== أوامر البوت الأساسية ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بدء التشغيل مع رسالة ترحيب مخصصة"""
     user = update.effective_user
     
     # تسجيل المستخدم في قاعدة البيانات
@@ -47,12 +48,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name
     )
     
-    await update.message.reply_text(
-        f"🚀 مرحباً {user.first_name}!\n"
-        f"البوت يعمل على Railway بنجاح!\n\n"
-        f"معرفك: {user.id}\n"
-        f"✅ تم تسجيل دخولك في قاعدة البيانات"
+    # جلب رسالة الترحيب المخصصة
+    welcome_template = db.get_welcome_message()
+    
+    # استبدال المتغيرات في الرسالة
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    welcome_message = welcome_template.format(
+        first_name=user.first_name,
+        last_name=user.last_name or '',
+        user_id=user.id,
+        username=f"@{user.username}" if user.username else "بدون معرف",
+        current_time=current_time
     )
+    
+    await update.message.reply_text(welcome_message, parse_mode='Markdown')
+    logger.info(f"👤 المستخدم {user.id} قام بالتسجيل")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
@@ -65,11 +75,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 **للمشرفين:**
 /admin - لوحة التحكم
-/stats - إحصائيات النظام الكاملة
+/stats - إحصائيات النظام
 /broadcast - إرسال رسالة للجميع
 /sendbroadcast - إرسال الرسالة المعلقة
 /userslist - عرض قائمة المستخدمين
 /broadcaststats <رقم> - إحصائيات إذاعة محددة
+/welcome - عرض رسالة الترحيب الحالية
+/setwelcome - تعديل رسالة الترحيب
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -78,6 +90,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== أوامر المشرفين ====================
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """لوحة تحكم المشرفين"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -90,11 +103,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_commands = f"""
 👑 **لوحة تحكم المشرفين**
 
-📊 /stats - إحصائيات النظام الكاملة
+📊 /stats - إحصائيات النظام
 📢 /broadcast - إرسال رسالة للجميع
 📤 /sendbroadcast - إرسال الرسالة المعلقة
 👥 /userslist - عرض المستخدمين ({users_count} مستخدم)
 📈 /broadcaststats <رقم> - إحصائيات إذاعة
+
+🛠️ **إعدادات النظام:**
+/welcome - عرض رسالة الترحيب
+/setwelcome - تعديل رسالة الترحيب
 
 🔢 **معلومات النظام:**
 - عدد المشرفين: {len(ADMIN_IDS)}
@@ -106,7 +123,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"المشرف {user_id} فتح لوحة التحكم")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض إحصائيات النظام الكاملة - النسخة النهائية المصححة"""
+    """عرض إحصائيات النظام"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -116,10 +133,10 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"📊 المشرف {user_id} طلب الإحصائيات")
         
-        # ✅ **استخدام الدالة الموثوقة الجديدة**
+        # استخدام الدالة الموثوقة
         stats = db.get_stats_fixed()
         
-        # ✅ **تأكد من أن stats ليست None**
+        # تأكد من أن stats ليست None
         if not stats:
             logger.warning("الإحصائيات فارغة، استخدام القيم الأساسية")
             stats = {
@@ -131,7 +148,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'top_users': []
             }
         
-        # ✅ **تأكد من وجود جميع المفاتيح**
+        # تأكد من وجود جميع المفاتيح
         total_users = stats.get('total_users', db.get_users_count())
         total_messages = stats.get('total_messages', 0)
         total_broadcasts = stats.get('total_broadcasts', 0)
@@ -139,9 +156,9 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_broadcast_id = stats.get('last_broadcast_id')
         top_users = stats.get('top_users', [])
         
-        # ✅ **بناء رسالة الإحصائيات**
+        # بناء رسالة الإحصائيات
         stats_text = f"""
-📊 **إحصائيات النظام الكاملة**
+📊 **إحصائيات النظام**
 
 👥 **المستخدمون:**
 - العدد الكلي: {total_users} مستخدم
@@ -149,7 +166,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - الرسائل الكلية: {total_messages:,}
 
 📢 **الإذاعات:**
-- عدد الإذاعات المرسلة: {total_broadcasts}
+- عدد الإذاعات: {total_broadcasts}
 """
         
         if last_broadcast_id:
@@ -174,12 +191,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
-        logger.info(f"✅ تم عرض الإحصائيات الكاملة للمشرف {user_id}")
+        logger.info(f"✅ تم عرض الإحصائيات للمشرف {user_id}")
         
     except Exception as e:
-        logger.error(f"❌ خطأ كامل في عرض الإحصائيات: {e}", exc_info=True)
+        logger.error(f"❌ خطأ في عرض الإحصائيات: {e}", exc_info=True)
         
-        # ✅ **الرسالة الاحتياطية المحسنة**
+        # الرسالة الاحتياطية
         try:
             users_count = db.get_users_count()
             fallback_text = f"""
@@ -205,6 +222,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إعداد رسالة للإذاعة"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -240,6 +258,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إرسال الإذاعة للمستخدمين"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -265,7 +284,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ فشل في حفظ الإذاعة!")
         return
     
-    # 🔥 **الإرسال الفعلي للمستخدمين**
+    # الإرسال الفعلي للمستخدمين
     sent_count = 0
     failed_count = 0
     failed_users = []
@@ -376,6 +395,7 @@ async def broadcast_stats_command(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("📌 استخدام: /broadcaststats <رقم_الإذاعة>\nمثال: /broadcaststats 1")
 
 async def users_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض قائمة المستخدمين"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -408,6 +428,94 @@ async def users_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await update.message.reply_text(users_text, parse_mode='Markdown')
     logger.info(f"المشرف {user_id} طلب قائمة المستخدمين")
+
+# ==================== أوامر رسالة الترحيب ====================
+async def show_welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض رسالة الترحيب الحالية"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    # جلب رسالة الترحيب
+    welcome_template = db.get_welcome_message()
+    
+    # عرض نموذج للمستخدم الحالي
+    user = update.effective_user
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    preview = welcome_template.format(
+        first_name=user.first_name,
+        last_name=user.last_name or '',
+        user_id=user.id,
+        username=f"@{user.username}" if user.username else "بدون معرف",
+        current_time=current_time
+    )
+    
+    await update.message.reply_text(
+        f"📋 **رسالة الترحيب الحالية:**\n\n"
+        f"📝 **القالب:**\n`{welcome_template}`\n\n"
+        f"👤 **معاينة لك:**\n{preview}\n\n"
+        f"🔧 **المتغيرات المتاحة:**\n"
+        f"`{{first_name}}` - الاسم الأول\n"
+        f"`{{last_name}}` - الاسم الأخير\n"
+        f"`{{user_id}}` - المعرف\n"
+        f"`{{username}}` - المعرف @\n"
+        f"`{{current_time}}` - الوقت الحالي\n\n"
+        f"📌 **للتعديل:** `/setwelcome <رسالة جديدة>`",
+        parse_mode='Markdown'
+    )
+    logger.info(f"المشرف {user_id} طلب عرض رسالة الترحيب")
+
+async def set_welcome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تعديل رسالة الترحيب"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "📝 **استخدام الأمر:**\n"
+            "`/setwelcome <رسالة الترحيب>`\n\n"
+            "🔧 **المتغيرات المتاحة:**\n"
+            "`{first_name}` - الاسم الأول\n"
+            "`{last_name}` - الاسم الأخير\n"
+            "`{user_id}` - المعرف\n"
+            "`{username}` - المعرف @\n"
+            "`{current_time}` - الوقت الحالي\n\n"
+            "📌 **مثال:**\n"
+            "`/setwelcome مرحباً {first_name}! 🎯 معرفك: {user_id}`"
+        )
+        return
+    
+    # جمع النص من الأوامر
+    welcome_text = ' '.join(context.args)
+    
+    # حفظ رسالة الترحيب
+    if db.set_welcome_message(welcome_text):
+        # معاينة الرسالة الجديدة
+        user = update.effective_user
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        preview = welcome_text.format(
+            first_name=user.first_name,
+            last_name=user.last_name or '',
+            user_id=user.id,
+            username=f"@{user.username}" if user.username else "بدون معرف",
+            current_time=current_time
+        )
+        
+        await update.message.reply_text(
+            f"✅ **تم تحديث رسالة الترحيب بنجاح!**\n\n"
+            f"📝 **الرسالة الجديدة:**\n`{welcome_text}`\n\n"
+            f"👤 **معاينة:**\n{preview}\n\n"
+            f"🔍 **سيتم تطبيقها على جميع المستخدمين الجدد.**",
+            parse_mode='Markdown'
+        )
+        logger.info(f"المشرف {user_id} قام بتعديل رسالة الترحيب")
+    else:
+        await update.message.reply_text("❌ فشل في حفظ رسالة الترحيب!")
 
 async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """تتبع ردود المستخدمين على الإذاعات"""
@@ -465,67 +573,13 @@ def check_database_status():
 
 # ==================== الوظائف الرئيسية ====================
 def setup_handlers(application):
+    # أوامر المستخدمين
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status))
     
+    # أوامر المشرفين الأساسية
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
-    application.add_handler(CommandHandler("sendbroadcast", send_broadcast_command))
-    application.add_handler(CommandHandler("broadcaststats", broadcast_stats_command))
-    application.add_handler(CommandHandler("userslist", users_list_command))
-    
-    # إضافة معالج للردود على الرسائل
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_broadcast_reply
-    ))
-
-def run_bot():
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN غير معين")
-        return
-    
-    application = Application.builder().token(BOT_TOKEN).build()
-    setup_handlers(application)
-    
-    logger.info(f"🤖 بدأ تشغيل بوت تليجرام...")
-    logger.info(f"👑 عدد المشرفين: {len(ADMIN_IDS)}")
-    
-    # ✅ فحص حالة النظام عند البدء
-    db_status = check_database_status()
-    logger.info(f"💾 حالة قاعدة البيانات عند البدء: {db_status}")
-    
-    users_count = db.get_users_count()
-    logger.info(f"👥 عدد المستخدمين المسجلين: {users_count}")
-    
-    # ✅ جلب الإحصائيات عند البدء
-    try:
-        stats = db.get_stats_fixed()
-        logger.info(f"📊 إحصائيات البدء: {stats}")
-    except Exception as e:
-        logger.warning(f"⚠️ لا يمكن جلب إحصائيات البدء: {e}")
-        logger.info("ℹ️ سيتم استخدام الإحصائيات المبسطة")
-    
-    application.run_polling(drop_pending_updates=True)
-
-def main():
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    
-    if not BOT_TOKEN:
-        logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
-        return
-    
-    logger.info("🚀 بدء تشغيل البوت على Railway...")
-    
-    try:
-        run_bot()
-    except Exception as e:
-        logger.error(f"❌ فشل في تشغيل البوت: {e}")
-        return
-
-if __name__ == "__main__":
-    main()
+    application.add_handler(CommandHandler("sendbroadcast
