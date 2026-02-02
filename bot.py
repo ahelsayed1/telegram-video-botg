@@ -65,11 +65,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 **للمشرفين:**
 /admin - لوحة التحكم
-/stats - إحصائيات النظام الكاملة
+/stats - إحصائيات النظام
 /broadcast - إرسال رسالة للجميع
 /sendbroadcast - إرسال الرسالة المعلقة
 /userslist - عرض قائمة المستخدمين
-/broadcaststats <رقم> - إحصائيات إذاعة محددة
+/broadcaststats <رقم> - إحصائيات إذاعة
+
+🔍 **البحث المتقدم:**
+/search <كلمة> - بحث عام
+/search <كلمة> date:week - بحث في آخر أسبوع
+/search <كلمة> date:month active:true - بحث متقدم
+/searchid <رقم> - بحث بالمعرف المحدد
+/searchname <اسم> - بحث بالاسم فقط
+/searchactive - عرض المستخدمين النشطين
+
+ℹ️ *استخدم /search بدون بارامترات لعرض المساعدة الكاملة*
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
@@ -95,6 +105,12 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📤 /sendbroadcast - إرسال الرسالة المعلقة
 👥 /userslist - عرض المستخدمين ({users_count} مستخدم)
 📈 /broadcaststats <رقم> - إحصائيات إذاعة
+
+🔍 **البحث:**
+/search - بحث متقدم عن المستخدمين
+/searchid - بحث بالمعرف المحدد
+/searchname - بحث بالاسم فقط
+/searchactive - المستخدمين النشطين فقط
 
 🔢 **معلومات النظام:**
 - عدد المشرفين: {len(ADMIN_IDS)}
@@ -409,123 +425,163 @@ async def users_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(users_text, parse_mode='Markdown')
     logger.info(f"المشرف {user_id} طلب قائمة المستخدمين")
 
-async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """تتبع ردود المستخدمين على الإذاعات"""
-    if update.message.reply_to_message and update.message.reply_to_message.text:
-        replied_text = update.message.reply_to_message.text
-        if "إذاعة من الإدارة:" in replied_text:
-            user_id = update.effective_user.id
-            user = db.get_user(user_id)
-            
-            if user:
-                db.log_activity(
-                    user_id=user_id,
-                    action="broadcast_replied",
-                    details=f"reply: {update.message.text[:50]}"
-                )
-                
-                # إرسال إشعار للمشرف
-                admin_message = f"""
-🔄 **رد على إذاعة:**
-👤 المستخدم: {user['first_name']} (@{user['username'] or 'بدون'})
-🆔 المعرف: {user_id}
-💬 الرد: {update.message.text[:100]}
+# ==================== نظام البحث المتقدم ====================
+async def search_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بحث عن مستخدمين - النسخة المتقدمة مع التصفيات"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ هذا الأمر للمشرفين فقط!")
+        return
+    
+    # تحليل البارامترات
+    search_term = ""
+    search_type = "all"
+    join_date_filter = "all"
+    active_only = False
+    
+    # تحليل الأوامر الخاصة
+    if update.message.text.startswith('/searchactive'):
+        active_only = True
+        command_parts = update.message.text.split()[1:]
+        search_term = ' '.join(command_parts) if command_parts else ""
+    elif update.message.text.startswith('/searchid'):
+        search_type = "id"
+        if context.args:
+            search_term = context.args[0]
+    elif update.message.text.startswith('/searchname'):
+        search_type = "name"
+        search_term = ' '.join(context.args) if context.args else ""
+    elif update.message.text.startswith('/search'):
+        # تحليل البارامترات المتقدمة
+        filters = {}
+        search_parts = []
+        
+        for arg in context.args:
+            if arg.startswith('date:'):
+                join_date_filter = arg.split(':')[1]  # today, week, month, year
+            elif arg.startswith('active:'):
+                active_only = arg.split(':')[1].lower() == 'true'
+            else:
+                search_parts.append(arg)
+        
+        search_term = ' '.join(search_parts)
+    
+    if not context.args and not active_only:
+        # عرض مساعدة مفصلة
+        help_text = """
+🔍 **نظام البحث المتقدم عن المستخدمين**
+
+📌 **الأوامر المتاحة:**
+/search <كلمة> - بحث عام
+/search <كلمة> date:week - بحث في آخر أسبوع
+/search <كلمة> date:month active:true - بحث نشطين في آخر شهر
+
+🎯 **أمثلة:**
+/search احمد                        ← بحث عن "احمد"
+/search احمد date:week              ← بحث في المسبوع الأخير
+/search احمد date:month active:true ← بحث عن نشطين في الشهر الأخير
+/search date:today                  ← المستخدمين الجدد اليوم
+
+📅 **خيارات تاريخ الانضمام:**
+date:today    - اليوم فقط
+date:week     - آخر أسبوع
+date:month    - آخر شهر  
+date:year     - آخر سنة
+
+⚡ **خيارات النشاط:**
+active:true   - النشطين فقط (آخر 30 يوم)
+active:false  - الجميع
+
+🔍 **أوامر سريعة:**
+/searchid <رقم>    - بحث بالمعرف المحدد
+/searchname <اسم>  - بحث بالاسم فقط
+/searchactive      - عرض المستخدمين النشطين فقط
+/searchactive <كلمة> - بحث عن نشطين بكلمة معينة
+
+📊 **خيارات العرض:**
+الحد الأقصى 50 نتيجة
 """
-                
-                # إرسال لجميع المشرفين
-                for admin_id in ADMIN_IDS:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=admin_id,
-                            text=admin_message
-                        )
-                    except Exception as e:
-                        logger.error(f"فشل إرسال إشعار للمشرف {admin_id}: {e}")
-
-# ==================== وظائف مساعدة ====================
-def check_database_status():
-    """فحص حالة قاعدة البيانات"""
-    try:
-        users_count = db.get_users_count()
-        stats = db.get_stats_fixed()
-        
-        status_info = {
-            'database_file': db.db_name,
-            'users_count': users_count,
-            'stats_available': bool(stats),
-            'last_check': datetime.now().isoformat()
-        }
-        
-        logger.info(f"✅ حالة قاعدة البيانات: {status_info}")
-        return status_info
-        
-    except Exception as e:
-        logger.error(f"❌ فشل في فحص حالة قاعدة البيانات: {e}")
-        return {'error': str(e), 'last_check': datetime.now().isoformat()}
-
-# ==================== الوظائف الرئيسية ====================
-def setup_handlers(application):
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("status", status))
-    
-    application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("broadcast", broadcast_command))
-    application.add_handler(CommandHandler("sendbroadcast", send_broadcast_command))
-    application.add_handler(CommandHandler("broadcaststats", broadcast_stats_command))
-    application.add_handler(CommandHandler("userslist", users_list_command))
-    
-    # إضافة معالج للردود على الرسائل
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
-        handle_broadcast_reply
-    ))
-
-def run_bot():
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    
-    if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN غير معين")
+        await update.message.reply_text(help_text, parse_mode='Markdown')
         return
     
-    application = Application.builder().token(BOT_TOKEN).build()
-    setup_handlers(application)
-    
-    logger.info(f"🤖 بدأ تشغيل بوت تليجرام...")
-    logger.info(f"👑 عدد المشرفين: {len(ADMIN_IDS)}")
-    
-    # ✅ فحص حالة النظام عند البدء
-    db_status = check_database_status()
-    logger.info(f"💾 حالة قاعدة البيانات عند البدء: {db_status}")
-    
-    users_count = db.get_users_count()
-    logger.info(f"👥 عدد المستخدمين المسجلين: {users_count}")
-    
-    # ✅ جلب الإحصائيات عند البدء
-    try:
-        stats = db.get_stats_fixed()
-        logger.info(f"📊 إحصائيات البدء: {stats}")
-    except Exception as e:
-        logger.warning(f"⚠️ لا يمكن جلب إحصائيات البدء: {e}")
-        logger.info("ℹ️ سيتم استخدام الإحصائيات المبسطة")
-    
-    application.run_polling(drop_pending_updates=True)
-
-def main():
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    
-    if not BOT_TOKEN:
-        logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
-        return
-    
-    logger.info("🚀 بدء تشغيل البوت على Railway...")
+    logger.info(f"🔍 المشرف {user_id} يبحث: '{search_term}' - date:{join_date_filter} - active:{active_only}")
     
     try:
-        run_bot()
-    except Exception as e:
-        logger.error(f"❌ فشل في تشغيل البوت: {e}")
-        return
-
-if __name__ == "__main__":
-    main()
+        if search_type == "id":
+            # البحث بالمعرف المحدد
+            user = db.get_user(int(search_term))
+            results = [user] if user else []
+            results_count = len(results)
+            
+        elif update.message.text.startswith('/searchactive') and not search_term:
+            # عرض جميع النشطين
+            try:
+                activity_data = db.get_users_by_activity()
+                results = activity_data['active']
+                results_count = activity_data['active_count']
+            except AttributeError:
+                # إذا لم تكن الدالة موجودة، استخدم البحث العادي
+                results = db.search_users(search_term) if search_term else db.get_all_users()
+                results = [u for u in results if db.is_user_active(u['user_id'])] if hasattr(db, 'is_user_active') else results
+                results_count = len(results)
+            
+        else:
+            # البحث المتقدم مع التصفيات
+            try:
+                results = db.search_users_with_filters(
+                    search_term=search_term,
+                    join_date_filter=join_date_filter,
+                    active_only=active_only,
+                    limit=50
+                )
+                results_count = len(results)
+            except AttributeError:
+                # إذا لم تكن الدالة موجودة، استخدم البحث العادي
+                results = db.search_users(search_term) if search_term else db.get_all_users()
+                results_count = len(results)
+        
+        if not results:
+            # بناء رسالة الخطأ مع تفاصيل التصفيات
+            filter_info = []
+            if join_date_filter != "all":
+                filter_info.append(f"تاريخ: {join_date_filter}")
+            if active_only:
+                filter_info.append("النشطين فقط")
+            
+            filter_text = f" مع التصفيات: {', '.join(filter_info)}" if filter_info else ""
+            
+            await update.message.reply_text(
+                f"❌ لم يتم العثور على نتائج لـ **'{search_term}'**{filter_text}",
+                parse_mode='Markdown'
+            )
+            return
+        
+        # بناء معلومات التصفيات لعرضها
+        filter_details = []
+        if join_date_filter != "all":
+            date_names = {
+                'today': 'اليوم',
+                'week': 'آخر أسبوع', 
+                'month': 'آخر شهر',
+                'year': 'آخر سنة'
+            }
+            filter_details.append(date_names.get(join_date_filter, join_date_filter))
+        
+        if active_only:
+            filter_details.append("النشطين فقط")
+        
+        filter_text = f" (بالتصفيات: {', '.join(filter_details)})" if filter_details else ""
+        
+        if len(results) == 1 and search_type == "id":
+            # عرض تفاصيل مستخدم واحد عند البحث بالمعرف
+            user = results[0]
+            
+            # حساب النشاط
+            last_active = "غير معروف"
+            if user.get('last_active'):
+                try:
+                    last_active_dt = datetime.fromisoformat(user['last_active'])
+                    days_ago = (datetime.now() - last_active_dt).days
+                    if days_ago == 0:
+                        last_ac
