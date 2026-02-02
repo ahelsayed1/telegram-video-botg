@@ -174,7 +174,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 messages = user.get('message_count', 0)
                 stats_text += f"{i}. {name} - {messages:,} رسالة\n"
         
-        # إضافة معلومات قاعدة البيانات
+        # إضافة معلومات قاعدة البيانات - ✅ **تم التصحيح هنا**
         stats_text += f"""
 💾 **قاعدة البيانات:**
 - ✅ SQLite نشطة
@@ -191,7 +191,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ خطأ كامل في عرض الإحصائيات: {e}", exc_info=True)
         
-        # العرض المبسط في حالة الخطأ
+        # العرض المبسط في حالة الخطأ - ✅ **تم التصحيح هنا**
         try:
             fallback_text = f"""
 📊 **إحصائيات مبسطة:**
