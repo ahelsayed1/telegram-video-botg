@@ -1,29 +1,22 @@
-# database.py - النسخة المعدلة لتعمل على Railway
+# database.py - النسخة النهائية الموثوقة
 import sqlite3
 import logging
-import os
 from datetime import datetime, timedelta
+import os
 
 logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, db_name="bot_database.db"):
-        """تهيئة قاعدة البيانات مع مسار مطلق لـ Railway"""
-        # استخدام مسار مطلق متوافق مع Railway
-        self.db_name = os.path.join(os.getcwd(), db_name)
-        logger.info(f"📁 مسار قاعدة البيانات: {self.db_name}")
-        logger.info(f"📁 المسار الحالي: {os.getcwd()}")
+        """تهيئة قاعدة البيانات"""
+        self.db_name = db_name
         self.init_database()
     
     def get_connection(self):
         """الحصول على اتصال بقاعدة البيانات"""
-        try:
-            conn = sqlite3.connect(self.db_name, timeout=10)
-            conn.row_factory = sqlite3.Row
-            return conn
-        except Exception as e:
-            logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
-            raise
+        conn = sqlite3.connect(self.db_name)
+        conn.row_factory = sqlite3.Row
+        return conn
     
     def init_database(self):
         """إنشاء الجداول إذا لم تكن موجودة"""
@@ -68,10 +61,10 @@ class Database:
                 ''')
                 
                 conn.commit()
-                logger.info("✅ قاعدة البيانات جاهزة - تم إنشاء/فحص الجداول")
+                logger.info("✅ قاعدة البيانات جاهزة")
                 
         except Exception as e:
-            logger.error(f"❌ خطأ في تهيئة قاعدة البيانات: {e}", exc_info=True)
+            logger.error(f"❌ خطأ في تهيئة قاعدة البيانات: {e}")
     
     # ==================== دوال المستخدمين ====================
     def add_or_update_user(self, user_id, username, first_name, last_name=None):
@@ -100,7 +93,6 @@ class Database:
                     SET message_count = message_count + 1 
                     WHERE user_id = ?
                     ''', (user_id,))
-                    logger.debug(f"✅ تم تحديث المستخدم {user_id}")
                 else:
                     # إضافة مستخدم جديد
                     cursor.execute('''
@@ -108,13 +100,12 @@ class Database:
                     (user_id, username, first_name, last_name, join_date, last_active, message_count)
                     VALUES (?, ?, ?, ?, ?, ?, 1)
                     ''', (user_id, username, first_name, last_name, current_time, current_time))
-                    logger.info(f"✅ تم إضافة مستخدم جديد: {user_id} - {first_name}")
                 
                 conn.commit()
                 return True
                 
         except Exception as e:
-            logger.error(f"❌ خطأ في إضافة/تحديث المستخدم {user_id}: {e}")
+            logger.error(f"❌ خطأ في إضافة/تحديث المستخدم: {e}")
             return False
     
     def get_user(self, user_id):
@@ -126,7 +117,7 @@ class Database:
                 user = cursor.fetchone()
                 return dict(user) if user else None
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب بيانات المستخدم {user_id}: {e}")
+            logger.error(f"❌ خطأ في جلب بيانات المستخدم: {e}")
             return None
     
     def get_all_users(self):
@@ -184,7 +175,7 @@ class Database:
                 
                 conn.commit()
                 broadcast_id = cursor.lastrowid
-                logger.info(f"✅ تم حفظ إذاعة #{broadcast_id} من المشرف {admin_id}")
+                logger.info(f"✅ تم حفظ إذاعة #{broadcast_id}")
                 return broadcast_id
         except Exception as e:
             logger.error(f"❌ خطأ في تسجيل الإذاعة: {e}")
@@ -219,7 +210,7 @@ class Database:
                 broadcast = cursor.fetchone()
                 return dict(broadcast) if broadcast else None
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب إحصائيات الإذاعة #{broadcast_id}: {e}")
+            logger.error(f"❌ خطأ في جلب إحصائيات الإذاعة: {e}")
             return None
     
     # ==================== دوال الإحصائيات ====================
@@ -255,8 +246,7 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT MAX(broadcast_id) FROM broadcasts")
-                result = cursor.fetchone()[0]
-                stats['last_broadcast_id'] = result
+                stats['last_broadcast_id'] = cursor.fetchone()[0]
             
             logger.info(f"✅ الإحصائيات المبسطة المحسوبة: {stats}")
             return stats
@@ -372,7 +362,6 @@ class Database:
                 ''', (user_id, action, current_time, details))
                 
                 conn.commit()
-                logger.debug(f"✅ تم تسجيل نشاط: {user_id} - {action}")
                 return True
         except Exception as e:
             logger.error(f"❌ خطأ في تسجيل النشاط: {e}")
@@ -415,12 +404,12 @@ class Database:
     def get_database_info(self):
         """الحصول على معلومات عن قاعدة البيانات"""
         try:
+            import os
             info = {
                 'filename': self.db_name,
                 'exists': os.path.exists(self.db_name),
                 'size': 0,
-                'tables': [],
-                'path': os.path.abspath(self.db_name)
+                'tables': []
             }
             
             if info['exists']:
@@ -431,7 +420,6 @@ class Database:
                     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
                     info['tables'] = [row[0] for row in cursor.fetchall()]
             
-            logger.info(f"📊 معلومات قاعدة البيانات: {info}")
             return info
         except Exception as e:
             logger.error(f"❌ خطأ في جلب معلومات قاعدة البيانات: {e}")
