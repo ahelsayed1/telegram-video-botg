@@ -64,7 +64,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👑 **للمشرفين:**
 /admin - لوحة التحكم
-/stats - إحصائيات النظام
+/stats - إحصائيات النظام الكاملة
 /broadcast - إرسال رسالة للجميع
 /sendbroadcast - إرسال الرسالة المعلقة
 /userslist - عرض قائمة المستخدمين
@@ -89,7 +89,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_commands = f"""
 👑 **لوحة تحكم المشرفين**
 
-📊 /stats - إحصائيات النظام
+📊 /stats - إحصائيات النظام الكاملة
 📢 /broadcast - إرسال رسالة للجميع
 📤 /sendbroadcast - إرسال الرسالة المعلقة
 👥 /userslist - عرض المستخدمين ({users_count} مستخدم)
@@ -105,6 +105,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"المشرف {user_id} فتح لوحة التحكم")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض إحصائيات النظام الكاملة - النسخة المصححة"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -112,45 +113,99 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        stats = db.get_stats()
+        logger.info(f"📊 المشرف {user_id} طلب الإحصائيات")
+        
+        # جمع البيانات بشكل منفصل لتفادي الأخطاء
         users_count = db.get_users_count()
+        active_users = db.get_active_users_count(days=1)
         
-        # إذا كانت الإحصائيات فارغة، حاول جمعها مرة أخرى
-        if not stats:
-            logger.warning("الإحصائيات فارغة، محاولة جمعها مرة أخرى")
-            stats = db.get_stats() or {}
+        # جلب الإحصائيات من قاعدة البيانات
+        stats = db.get_stats()
         
+        # إذا كانت الإحصائيات فارغة أو غير صالحة
+        if not stats or not isinstance(stats, dict):
+            logger.warning("الإحصائيات فارغة أو غير صالحة، استخدام القيم الافتراضية")
+            stats = {
+                'total_users': users_count,
+                'new_users_today': 0,
+                'total_messages': 0,
+                'total_broadcasts': 0,
+                'last_broadcast_id': None,
+                'total_logs': 0,
+                'top_users': []
+            }
+        
+        # التأكد من وجود القيم الأساسية
+        total_messages = stats.get('total_messages', 0)
+        total_broadcasts = stats.get('total_broadcasts', 0)
+        new_users_today = stats.get('new_users_today', 0)
+        last_broadcast_id = stats.get('last_broadcast_id')
+        
+        # بدء بناء رسالة الإحصائيات
         stats_text = f"""
-📊 **إحصائيات النظام**
+📊 **إحصائيات النظام الكاملة**
 
 👥 **المستخدمون:**
 - العدد الكلي: {users_count} مستخدم
-- المستخدمين الجدد اليوم: {stats.get('new_users_today', 0)}
-- الرسائل الكلية: {stats.get('total_messages', 0)}
+- المستخدمين النشطين اليوم: {active_users}
+- المستخدمين الجدد اليوم: {new_users_today}
+- الرسائل الكلية: {total_messages:,}
 
 📢 **الإذاعات:**
-- عدد الإذاعات: {stats.get('total_broadcasts', 0)}
-
+- عدد الإذاعات المرسلة: {total_broadcasts}
+"""
+        
+        # إضافة آخر إذاعة إذا موجودة
+        if last_broadcast_id:
+            stats_text += f"- آخر إذاعة: #{last_broadcast_id}\n"
+        
+        # إضافة معلومات المشرفين
+        stats_text += f"""
 👑 **المشرفون:**
 - العدد: {len(ADMIN_IDS)} مشرف
-
+"""
+        
+        # إضافة المستخدمين الأكثر نشاطاً إذا متوفرين
+        top_users = stats.get('top_users', [])
+        if top_users:
+            stats_text += "\n🏆 **المستخدمون الأكثر نشاطاً:**\n"
+            for i, user in enumerate(top_users[:5], 1):
+                name = user.get('first_name', 'غير معروف')
+                messages = user.get('message_count', 0)
+                stats_text += f"{i}. {name} - {messages:,} رسالة\n"
+        
+        # إضافة معلومات قاعدة البيانات
+        stats_text += f"""
 💾 **قاعدة البيانات:**
 - ✅ SQLite نشطة
 - 📁 الملف: {db.db_name}
 """
         
+        # إضافة تاريخ آخر تحديث
+        from datetime import datetime
+        stats_text += f"- 🕒 آخر تحديث: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
         await update.message.reply_text(stats_text, parse_mode='Markdown')
-        logger.info(f"المشرف {user_id} طلب الإحصائيات")
+        logger.info(f"✅ تم عرض الإحصائيات للمشرف {user_id}")
         
     except Exception as e:
-        logger.error(f"❌ خطأ في عرض الإحصائيات: {e}")
-        await update.message.reply_text(
-            f"📊 **إحصائيات مبسطة:**\n\n"
-            f"👥 عدد المستخدمين: {db.get_users_count()}\n"
-            f"👑 عدد المشرفين: {len(ADMIN_IDS)}\n"
-            f"📁 قاعدة البيانات: ✅ نشطة\n\n"
-            f"⚠️ *ملاحظة: حدث خطأ في جلب بعض الإحصائيات التفصيلية*"
-        )
+        logger.error(f"❌ خطأ كامل في عرض الإحصائيات: {e}", exc_info=True)
+        
+        # العرض المبسط في حالة الخطأ
+        try:
+            fallback_text = f"""
+📊 **إحصائيات مبسطة:**
+
+👥 عدد المستخدمين: {db.get_users_count()}
+👑 عدد المشرفين: {len(ADMIN_IDS)}
+📁 قاعدة البيانات: ✅ نشطة
+
+⚠️ *جاري تحسين نظام الإحصائيات...*
+"""
+            await update.message.reply_text(fallback_text, parse_mode='Markdown')
+        except Exception as fallback_error:
+            logger.error(f"❌ فشل حتى في العرض المبسط: {fallback_error}")
+            await update.message.reply_text("❌ حدث خطأ في النظام. جاري العمل على الإصلاح.")
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -241,7 +296,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
             
             # تأخير بسيط لتجنب rate limits
             if sent_count % 10 == 0:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 
         except Exception as e:
             failed_count += 1
@@ -418,6 +473,13 @@ def run_bot():
     
     users_count = db.get_users_count()
     logger.info(f"👥 عدد المستخدمين المسجلين: {users_count}")
+    
+    # تسجيل إحصائيات البدء
+    try:
+        stats = db.get_stats()
+        logger.info(f"📊 إحصائيات البدء: {stats}")
+    except Exception as e:
+        logger.warning(f"⚠️ لا يمكن جلب إحصائيات البدء: {e}")
     
     application.run_polling(drop_pending_updates=True)
 
