@@ -1,22 +1,29 @@
-# database.py - النسخة النهائية الموثوقة
+# database.py - النسخة النهائية مع نظام البحث المتقدم
 import sqlite3
 import logging
-from datetime import datetime, timedelta
 import os
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, db_name="bot_database.db"):
-        """تهيئة قاعدة البيانات"""
-        self.db_name = db_name
+        """تهيئة قاعدة البيانات مع مسار مطلق لـ Railway"""
+        # استخدام مسار مطلق متوافق مع Railway
+        self.db_name = os.path.join(os.getcwd(), db_name)
+        logger.info(f"📁 مسار قاعدة البيانات: {self.db_name}")
+        logger.info(f"📁 المسار الحالي: {os.getcwd()}")
         self.init_database()
     
     def get_connection(self):
         """الحصول على اتصال بقاعدة البيانات"""
-        conn = sqlite3.connect(self.db_name)
-        conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            conn = sqlite3.connect(self.db_name, timeout=10)
+            conn.row_factory = sqlite3.Row
+            return conn
+        except Exception as e:
+            logger.error(f"❌ فشل الاتصال بقاعدة البيانات: {e}")
+            raise
     
     def init_database(self):
         """إنشاء الجداول إذا لم تكن موجودة"""
@@ -61,10 +68,10 @@ class Database:
                 ''')
                 
                 conn.commit()
-                logger.info("✅ قاعدة البيانات جاهزة")
+                logger.info("✅ قاعدة البيانات جاهزة - تم إنشاء/فحص الجداول")
                 
         except Exception as e:
-            logger.error(f"❌ خطأ في تهيئة قاعدة البيانات: {e}")
+            logger.error(f"❌ خطأ في تهيئة قاعدة البيانات: {e}", exc_info=True)
     
     # ==================== دوال المستخدمين ====================
     def add_or_update_user(self, user_id, username, first_name, last_name=None):
@@ -93,6 +100,7 @@ class Database:
                     SET message_count = message_count + 1 
                     WHERE user_id = ?
                     ''', (user_id,))
+                    logger.debug(f"✅ تم تحديث المستخدم {user_id}")
                 else:
                     # إضافة مستخدم جديد
                     cursor.execute('''
@@ -100,12 +108,13 @@ class Database:
                     (user_id, username, first_name, last_name, join_date, last_active, message_count)
                     VALUES (?, ?, ?, ?, ?, ?, 1)
                     ''', (user_id, username, first_name, last_name, current_time, current_time))
+                    logger.info(f"✅ تم إضافة مستخدم جديد: {user_id} - {first_name}")
                 
                 conn.commit()
                 return True
                 
         except Exception as e:
-            logger.error(f"❌ خطأ في إضافة/تحديث المستخدم: {e}")
+            logger.error(f"❌ خطأ في إضافة/تحديث المستخدم {user_id}: {e}")
             return False
     
     def get_user(self, user_id):
@@ -117,7 +126,7 @@ class Database:
                 user = cursor.fetchone()
                 return dict(user) if user else None
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب بيانات المستخدم: {e}")
+            logger.error(f"❌ خطأ في جلب بيانات المستخدم {user_id}: {e}")
             return None
     
     def get_all_users(self):
@@ -160,6 +169,151 @@ class Database:
             logger.error(f"❌ خطأ في جلب المستخدمين النشطين: {e}")
             return 0
     
+    def is_user_active(self, user_id, days_threshold=30):
+        """التحقق إذا كان المستخدم نشطاً في الأيام المحددة"""
+        try:
+            user = self.get_user(user_id)
+            if not user or not user.get('last_active'):
+                return False
+            
+            last_active = datetime.fromisoformat(user['last_active'])
+            days_inactive = (datetime.now() - last_active).days
+            return days_inactive <= days_threshold
+            
+        except Exception as e:
+            logger.error(f"❌ خطأ في التحقق من نشاط المستخدم {user_id}: {e}")
+            return False
+    
+    # ==================== دوال البحث المتقدمة ====================
+    def search_users(self, search_term):
+        """بحث عن مستخدمين حسب الاسم، المعرف، أو اليوزرنيم"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # البحث في جميع الحقول
+                query = '''
+                SELECT * FROM users 
+                WHERE user_id LIKE ? OR 
+                      username LIKE ? OR 
+                      first_name LIKE ? OR 
+                      last_name LIKE ?
+                ORDER BY join_date DESC
+                LIMIT 50
+                '''
+                
+                search_pattern = f"%{search_term}%"
+                cursor.execute(query, (
+                    search_pattern, 
+                    search_pattern, 
+                    search_pattern, 
+                    search_pattern
+                ))
+                
+                users = cursor.fetchall()
+                return [dict(user) for user in users]
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في البحث عن المستخدمين: {e}")
+            return []
+    
+    def search_users_with_filters(self, search_term="", join_date_filter="all", active_only=False, limit=50):
+        """بحث عن مستخدمين مع عوامل تصفية متقدمة"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # بناء الاستعلام الديناميكي
+                query_parts = ["SELECT * FROM users"]
+                params = []
+                
+                # تطبيق عوامل التصفية
+                conditions = []
+                
+                # عامل البحث
+                if search_term:
+                    conditions.append("(user_id LIKE ? OR username LIKE ? OR first_name LIKE ? OR last_name LIKE ?)")
+                    search_pattern = f"%{search_term}%"
+                    params.extend([search_pattern, search_pattern, search_pattern, search_pattern])
+                
+                # عامل تصفية تاريخ الانضمام
+                if join_date_filter != "all":
+                    today = datetime.now()
+                    if join_date_filter == "today":
+                        start_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
+                    elif join_date_filter == "week":
+                        start_date = today - timedelta(days=7)
+                    elif join_date_filter == "month":
+                        start_date = today - timedelta(days=30)
+                    elif join_date_filter == "year":
+                        start_date = today - timedelta(days=365)
+                    else:
+                        start_date = today - timedelta(days=36500)  # كل المستخدمين
+                    
+                    conditions.append("join_date >= ?")
+                    params.append(start_date.isoformat())
+                
+                # عامل تصفية النشاط
+                if active_only:
+                    active_date = (datetime.now() - timedelta(days=30)).isoformat()
+                    conditions.append("last_active >= ?")
+                    params.append(active_date)
+                
+                # إضافة الشروط للاستعلام
+                if conditions:
+                    query_parts.append("WHERE " + " AND ".join(conditions))
+                
+                # الترتيب والحد
+                query_parts.append("ORDER BY join_date DESC LIMIT ?")
+                params.append(limit)
+                
+                # تنفيذ الاستعلام
+                final_query = " ".join(query_parts)
+                cursor.execute(final_query, params)
+                
+                users = cursor.fetchall()
+                return [dict(user) for user in users]
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في البحث المتقدم: {e}")
+            return []
+    
+    def get_users_by_activity(self, days_threshold=30):
+        """الحصول على المستخدمين النشطين/غير النشطين"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                cutoff_date = (datetime.now() - timedelta(days=days_threshold)).isoformat()
+                
+                # المستخدمين النشطين
+                cursor.execute('''
+                SELECT * FROM users 
+                WHERE last_active >= ?
+                ORDER BY last_active DESC
+                ''', (cutoff_date,))
+                active_users = [dict(row) for row in cursor.fetchall()]
+                
+                # المستخدمين غير النشطين
+                cursor.execute('''
+                SELECT * FROM users 
+                WHERE last_active < ? OR last_active IS NULL
+                ORDER BY join_date DESC
+                ''', (cutoff_date,))
+                inactive_users = [dict(row) for row in cursor.fetchall()]
+                
+                return {
+                    'active': active_users,
+                    'inactive': inactive_users,
+                    'active_count': len(active_users),
+                    'inactive_count': len(inactive_users),
+                    'total': len(active_users) + len(inactive_users)
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ خطأ في جلب المستخدمين حسب النشاط: {e}")
+            return {'active': [], 'inactive': [], 'active_count': 0, 'inactive_count': 0, 'total': 0}
+    
     # ==================== دوال الإذاعة ====================
     def add_broadcast(self, admin_id, message_text, recipients_count):
         """تسجيل إذاعة جديدة"""
@@ -175,7 +329,7 @@ class Database:
                 
                 conn.commit()
                 broadcast_id = cursor.lastrowid
-                logger.info(f"✅ تم حفظ إذاعة #{broadcast_id}")
+                logger.info(f"✅ تم حفظ إذاعة #{broadcast_id} من المشرف {admin_id}")
                 return broadcast_id
         except Exception as e:
             logger.error(f"❌ خطأ في تسجيل الإذاعة: {e}")
@@ -210,7 +364,7 @@ class Database:
                 broadcast = cursor.fetchone()
                 return dict(broadcast) if broadcast else None
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب إحصائيات الإذاعة: {e}")
+            logger.error(f"❌ خطأ في جلب إحصائيات الإذاعة #{broadcast_id}: {e}")
             return None
     
     # ==================== دوال الإحصائيات ====================
@@ -246,7 +400,8 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT MAX(broadcast_id) FROM broadcasts")
-                stats['last_broadcast_id'] = cursor.fetchone()[0]
+                result = cursor.fetchone()[0]
+                stats['last_broadcast_id'] = result
             
             logger.info(f"✅ الإحصائيات المبسطة المحسوبة: {stats}")
             return stats
@@ -333,97 +488,4 @@ class Database:
             
         except Exception as e:
             logger.error(f"❌ خطأ في get_stats_fixed: {e}", exc_info=True)
-            # إرجاع قيم أساسية مضمونة
-            return {
-                'total_users': self.get_users_count(),
-                'total_messages': 0,
-                'total_broadcasts': 0,
-                'last_broadcast_id': None,
-                'new_users_today': 0,
-                'top_users': []
-            }
-    
-    def get_stats(self):
-        """الدالة الرئيسية للإحصائيات (للتوافق)"""
-        # نستخدم النسخة الموثوقة
-        return self.get_stats_fixed()
-    
-    # ==================== دوال النشاط ====================
-    def log_activity(self, user_id, action, details=None):
-        """تسجيل نشاط المستخدم"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                current_time = datetime.now().isoformat()
-                
-                cursor.execute('''
-                INSERT INTO activity_logs (user_id, action, timestamp, details)
-                VALUES (?, ?, ?, ?)
-                ''', (user_id, action, current_time, details))
-                
-                conn.commit()
-                return True
-        except Exception as e:
-            logger.error(f"❌ خطأ في تسجيل النشاط: {e}")
-            return False
-    
-    # ==================== دوال النسخ الاحتياطي ====================
-    def backup_database(self, backup_name=None):
-        """إنشاء نسخة احتياطية من قاعدة البيانات"""
-        import shutil
-        
-        try:
-            if backup_name is None:
-                backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-            
-            shutil.copy2(self.db_name, backup_name)
-            logger.info(f"✅ تم إنشاء نسخة احتياطية: {backup_name}")
-            return backup_name
-        except Exception as e:
-            logger.error(f"❌ خطأ في إنشاء النسخة الاحتياطية: {e}")
-            return None
-    
-    def cleanup_old_logs(self, days=30):
-        """تنظيف سجلات النشاط القديمة"""
-        try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
-                cursor.execute('''
-                DELETE FROM activity_logs 
-                WHERE timestamp < ?
-                ''', (cutoff_date,))
-                deleted_count = cursor.rowcount
-                conn.commit()
-                logger.info(f"✅ تم تنظيف {deleted_count} سجل نشاط قديم")
-                return deleted_count
-        except Exception as e:
-            logger.error(f"❌ خطأ في تنظيف السجلات: {e}")
-            return 0
-    
-    def get_database_info(self):
-        """الحصول على معلومات عن قاعدة البيانات"""
-        try:
-            import os
-            info = {
-                'filename': self.db_name,
-                'exists': os.path.exists(self.db_name),
-                'size': 0,
-                'tables': []
-            }
-            
-            if info['exists']:
-                info['size'] = os.path.getsize(self.db_name)
-                
-                with self.get_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                    info['tables'] = [row[0] for row in cursor.fetchall()]
-            
-            return info
-        except Exception as e:
-            logger.error(f"❌ خطأ في جلب معلومات قاعدة البيانات: {e}")
-            return {'filename': self.db_name, 'exists': False}
-
-# إنشاء كائن قاعدة بيانات عالمي
-db = Database()
+  
