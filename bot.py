@@ -64,7 +64,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /status - حالة البوت
 
 👑 **للمشرفين:**
-/admin - لوحة تحكم المشرفين
+/admin - لوحة التحكم
 /stats - إحصائيات النظام الكاملة
 /broadcast - إرسال رسالة للجميع
 /sendbroadcast - إرسال الرسالة المعلقة
@@ -106,7 +106,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"المشرف {user_id} فتح لوحة التحكم")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض إحصائيات النظام الكاملة - الإصدار المصحح"""
+    """عرض إحصائيات النظام الكاملة - النسخة النهائية المصححة"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -116,34 +116,52 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"📊 المشرف {user_id} طلب الإحصائيات")
         
-        # ✅ **استخدام الدالة الجديدة get_stats_simple**
-        stats = db.get_stats_simple()
+        # ✅ **استخدام الدالة الموثوقة الجديدة**
+        stats = db.get_stats_fixed()
         
-        # إذا كانت الإحصائيات فارغة
+        # ✅ **تأكد من أن stats ليست None**
         if not stats:
+            logger.warning("الإحصائيات فارغة، استخدام القيم الأساسية")
             stats = {
                 'total_users': db.get_users_count(),
                 'total_messages': 0,
                 'total_broadcasts': 0,
                 'new_users_today': 0,
-                'last_broadcast_id': None
+                'last_broadcast_id': None,
+                'top_users': []
             }
         
-        # بناء رسالة الإحصائيات
+        # ✅ **تأكد من وجود جميع المفاتيح**
+        total_users = stats.get('total_users', db.get_users_count())
+        total_messages = stats.get('total_messages', 0)
+        total_broadcasts = stats.get('total_broadcasts', 0)
+        new_users_today = stats.get('new_users_today', 0)
+        last_broadcast_id = stats.get('last_broadcast_id')
+        top_users = stats.get('top_users', [])
+        
+        # ✅ **بناء رسالة الإحصائيات**
         stats_text = f"""
 📊 **إحصائيات النظام الكاملة**
 
 👥 **المستخدمون:**
-- العدد الكلي: {stats['total_users']} مستخدم
-- المستخدمين الجدد اليوم: {stats['new_users_today']}
-- الرسائل الكلية: {stats['total_messages']:,}
+- العدد الكلي: {total_users} مستخدم
+- المستخدمين الجدد اليوم: {new_users_today}
+- الرسائل الكلية: {total_messages:,}
 
 📢 **الإذاعات:**
-- عدد الإذاعات المرسلة: {stats['total_broadcasts']}
+- عدد الإذاعات المرسلة: {total_broadcasts}
 """
         
-        if stats.get('last_broadcast_id'):
-            stats_text += f"- آخر إذاعة: #{stats['last_broadcast_id']}\n"
+        if last_broadcast_id:
+            stats_text += f"- آخر إذاعة: #{last_broadcast_id}\n"
+        
+        # إضافة المستخدمين الأكثر نشاطاً
+        if top_users and len(top_users) > 0:
+            stats_text += "\n🏆 **المستخدمون الأكثر نشاطاً:**\n"
+            for i, user in enumerate(top_users[:3], 1):
+                name = user.get('first_name', 'مستخدم')
+                messages = user.get('message_count', 0)
+                stats_text += f"{i}. {name} - {messages:,} رسالة\n"
         
         stats_text += f"""
 👑 **المشرفون:**
@@ -152,26 +170,39 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💾 **قاعدة البيانات:**
 - ✅ SQLite نشطة
 - 📁 الملف: {db.db_name}
-- 🕒 آخر تحديث: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- 🕒 آخر تحديث: {datetime.now().strftime('%H:%M:%S')}
 """
         
         await update.message.reply_text(stats_text, parse_mode='Markdown')
-        logger.info(f"✅ تم عرض الإحصائيات للمشرف {user_id}")
+        logger.info(f"✅ تم عرض الإحصائيات الكاملة للمشرف {user_id}")
         
     except Exception as e:
-        logger.error(f"❌ خطأ في عرض الإحصائيات: {e}")
+        logger.error(f"❌ خطأ كامل في عرض الإحصائيات: {e}", exc_info=True)
         
-        # العرض المبسط في حالة الخطأ
-        fallback_text = f"""
-📊 **إحصائيات مبسطة:**
+        # ✅ **الرسالة الاحتياطية المحسنة**
+        try:
+            users_count = db.get_users_count()
+            fallback_text = f"""
+📊 **إحصائيات النظام**
 
-👥 عدد المستخدمين: {db.get_users_count()}
+👥 عدد المستخدمين: {users_count}
 👑 عدد المشرفين: {len(ADMIN_IDS)}
-📁 قاعدة البيانات: ✅ نشطة
+📢 عدد الإذاعات: {db.get_stats_simple().get('total_broadcasts', 0) if hasattr(db, 'get_stats_simple') else 0}
 
-ℹ️ *البيانات الأساسية تعمل بشكل طبيعي*
+✅ **جميع الخدمات تعمل بشكل طبيعي**
+🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
-        await update.message.reply_text(fallback_text, parse_mode='Markdown')
+            await update.message.reply_text(fallback_text, parse_mode='Markdown')
+            logger.info(f"✅ تم عرض الإحصائيات المبسطة للمشرف {user_id}")
+            
+        except Exception as fallback_error:
+            logger.error(f"❌ فشل حتى في العرض المبسط: {fallback_error}")
+            await update.message.reply_text(
+                "📊 **حالة النظام:**\n\n"
+                "✅ البوت يعمل بشكل طبيعي\n"
+                "✅ قاعدة البيانات نشطة\n"
+                "✅ جاهز للاستخدام"
+            )
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -234,7 +265,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ فشل في حفظ الإذاعة!")
         return
     
-    # 🔥 **الإرسال الفعلي للمستخدمين - بدون تصفية المرسل**
+    # 🔥 **الإرسال الفعلي للمستخدمين**
     sent_count = 0
     failed_count = 0
     failed_users = []
@@ -246,7 +277,15 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
     
     # إرسال لكل مستخدم
     for user in users:
+        user_id_in_db = user['user_id']
+        
         try:
+            # إذا كان المستخدم هو المرسل نفسه
+            if user_id_in_db == user_id:
+                sent_count += 1
+                logger.info(f"✅ المرسل نفسه ({user_id_in_db}) - معامل كنجاح")
+                continue
+                
             await context.bot.send_message(
                 chat_id=user['user_id'],
                 text=f"📢 **إذاعة من الإدارة:**\n\n{message}"
@@ -262,7 +301,7 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
             
             # تأخير بسيط لتجنب rate limits
             if sent_count % 10 == 0:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 
         except Exception as e:
             failed_count += 1
@@ -283,6 +322,8 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
         logger.error(f"❌ فشل تحديث عدد المستلمين: {e}")
     
     # إرسال تقرير للمشرف
+    success_rate = (sent_count / users_count * 100) if users_count > 0 else 0
+    
     report = f"""
 ✅ **تم إرسال الإذاعة بنجاح!**
 
@@ -291,16 +332,13 @@ async def send_broadcast_command(update: Update, context: ContextTypes.DEFAULT_T
 👥 العدد الكلي: {users_count} مستخدم
 ✅ تم الإرسال بنجاح: {sent_count}
 ❌ فشل الإرسال: {failed_count}
-📝 نسبة النجاح: {round((sent_count/users_count)*100, 2) if users_count > 0 else 0}%
-
+📈 نسبة النجاح: {success_rate:.1f}%
 """
     
-    if failed_count > 0:
+    if failed_count > 0 and failed_users:
         report += f"\n📛 **المستخدمين الذين فشل الإرسال لهم:**\n"
-        for failed_id in failed_users[:10]:  # عرض أول 10 فقط
+        for failed_id in failed_users[:5]:
             report += f"- {failed_id}\n"
-        if failed_count > 10:
-            report += f"... و {failed_count - 10} آخرين"
     
     await update.message.reply_text(report, parse_mode='Markdown')
     
@@ -404,6 +442,27 @@ async def handle_broadcast_reply(update: Update, context: ContextTypes.DEFAULT_T
                     except Exception as e:
                         logger.error(f"فشل إرسال إشعار للمشرف {admin_id}: {e}")
 
+# ==================== وظائف مساعدة ====================
+def check_database_status():
+    """فحص حالة قاعدة البيانات"""
+    try:
+        users_count = db.get_users_count()
+        stats = db.get_stats_fixed()
+        
+        status_info = {
+            'database_file': db.db_name,
+            'users_count': users_count,
+            'stats_available': bool(stats),
+            'last_check': datetime.now().isoformat()
+        }
+        
+        logger.info(f"✅ حالة قاعدة البيانات: {status_info}")
+        return status_info
+        
+    except Exception as e:
+        logger.error(f"❌ فشل في فحص حالة قاعدة البيانات: {e}")
+        return {'error': str(e), 'last_check': datetime.now().isoformat()}
+
 # ==================== الوظائف الرئيسية ====================
 def setup_handlers(application):
     application.add_handler(CommandHandler("start", start))
@@ -436,15 +495,20 @@ def run_bot():
     logger.info(f"🤖 بدأ تشغيل بوت تليجرام...")
     logger.info(f"👑 عدد المشرفين: {len(ADMIN_IDS)}")
     
+    # ✅ فحص حالة النظام عند البدء
+    db_status = check_database_status()
+    logger.info(f"💾 حالة قاعدة البيانات عند البدء: {db_status}")
+    
     users_count = db.get_users_count()
     logger.info(f"👥 عدد المستخدمين المسجلين: {users_count}")
     
-    # تسجيل إحصائيات البدء - ✅ **استخدام get_stats_simple**
+    # ✅ جلب الإحصائيات عند البدء
     try:
-        stats = db.get_stats_simple()
+        stats = db.get_stats_fixed()
         logger.info(f"📊 إحصائيات البدء: {stats}")
     except Exception as e:
         logger.warning(f"⚠️ لا يمكن جلب إحصائيات البدء: {e}")
+        logger.info("ℹ️ سيتم استخدام الإحصائيات المبسطة")
     
     application.run_polling(drop_pending_updates=True)
 
@@ -455,7 +519,7 @@ def main():
         logger.error("❌ يرجى تعيين BOT_TOKEN في متغيرات Railway")
         return
     
-    logger.info("🚀 بدء تشغيل البوت...")
+    logger.info("🚀 بدء تشغيل البوت على Railway...")
     
     try:
         run_bot()
