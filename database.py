@@ -236,36 +236,64 @@ class Database:
     def get_stats(self):
         """الحصول على إحصائيات شاملة"""
         try:
+            logger.info("🔍 بدء جمع الإحصائيات...")
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 stats = {}
                 
-                # عدد المستخدمين الكلي
+                # 1. عدد المستخدمين الكلي
                 cursor.execute("SELECT COUNT(*) as count FROM users")
                 result = cursor.fetchone()
-                stats['total_users'] = result['count'] if result else 0
+                stats['total_users'] = result['count'] if result and 'count' in result.keys() else 0
+                logger.info(f"👥 عدد المستخدمين: {stats['total_users']}")
                 
-                # عدد المستخدمين اليوم
-                cursor.execute("SELECT COUNT(*) as count FROM users WHERE date(join_date) = date('now')")
+                # 2. عدد المستخدمين الجدد اليوم
+                cursor.execute('''
+                SELECT COUNT(*) as count FROM users 
+                WHERE date(join_date) = date('now', 'localtime')
+                ''')
                 result = cursor.fetchone()
-                stats['new_users_today'] = result['count'] if result else 0
+                stats['new_users_today'] = result['count'] if result and 'count' in result.keys() else 0
+                logger.info(f"🆕 مستخدمين جدد اليوم: {stats['new_users_today']}")
                 
-                # عدد الرسائل الكلي
-                cursor.execute("SELECT SUM(message_count) as total FROM users")
+                # 3. عدد الرسائل الكلي
+                cursor.execute("SELECT COALESCE(SUM(message_count), 0) as total FROM users")
                 result = cursor.fetchone()
-                stats['total_messages'] = result['total'] if result['total'] else 0
+                stats['total_messages'] = result['total'] if result and 'total' in result.keys() else 0
+                logger.info(f"💬 عدد الرسائل: {stats['total_messages']}")
                 
-                # عدد الإذاعات
+                # 4. عدد الإذاعات
                 cursor.execute("SELECT COUNT(*) as count FROM broadcasts")
                 result = cursor.fetchone()
-                stats['total_broadcasts'] = result['count'] if result else 0
+                stats['total_broadcasts'] = result['count'] if result and 'count' in result.keys() else 0
+                logger.info(f"📢 عدد الإذاعات: {stats['total_broadcasts']}")
                 
+                # 5. المستخدمين الأكثر نشاطاً (اختياري)
+                try:
+                    cursor.execute('''
+                    SELECT first_name, message_count 
+                    FROM users 
+                    ORDER BY message_count DESC 
+                    LIMIT 5
+                    ''')
+                    stats['top_users'] = [dict(row) for row in cursor.fetchall()]
+                except:
+                    stats['top_users'] = []
+                
+                logger.info(f"✅ الإحصائيات المحسوبة بنجاح: {stats}")
                 return stats
                 
         except Exception as e:
-            logger.error(f"❌ خطأ في جلب الإحصائيات: {e}")
-            return {}
+            logger.error(f"❌ خطأ في جلب الإحصائيات: {e}", exc_info=True)
+            # إرجاع قيم افتراضية في حالة الخطأ
+            return {
+                'total_users': self.get_users_count(),
+                'new_users_today': 0,
+                'total_messages': 0,
+                'total_broadcasts': 0,
+                'top_users': []
+            }
     
     # ==================== دوال النشاط ====================
     def log_activity(self, user_id, action, details=None):
