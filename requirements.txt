@@ -5,7 +5,8 @@ python-telegram-bot==20.7
 python-dotenv==1.0.0
 
 # AI Services
-google-generativeai>=0.8.3
+# تم استبدال المكتبة القديمة بالجديدة هنا 👇
+google-genai
 openai==1.12.0
 
 # HTTP & Networking
