@@ -178,26 +178,36 @@ class AIManager:
             logger.error(f"❌ Error in AI chat: {e}")
             return "⚠️ حدث خطأ أثناء معالجة طلبك. حاول مجدداً."
     
-    async def _chat_with_gemini(self, message: str, history: List[Dict]) -> str:
-        """استخدام Google Gemini للدردشة"""
+        async def _chat_with_gemini(self, message: str, history: List[Dict]) -> str:
+        """استخدام Google Gemini للدردشة - نسخة مستقرة ومحدثة"""
         try:
-            # تم تغيير القيمة الافتراضية هنا لضمان عملها حتى لو فشل المتغير البيئي
-            model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-            model = genai.GenerativeModel(model_name)
+            # استخدام اسم الموديل مباشرة لضمان التوافق
+            model_name = "gemini-1.5-flash"
+            model = genai.GenerativeModel(model_name=model_name)
             
-            # بناء سياق مبسط وفعال
-            chat = model.start_chat(history=[])
+            # إعداد التعليمات البرمجية للموديل
+            system_instruction = "أنت مساعد ذكي ومفيد، تجيب باللغة العربية بوضوح واختصار."
             
-            # إرسال الرسالة مع تعليمات النظام مدمجة
-            system_instruction = "أنت مساعد ذكي ودود يتحدث العربية. أجب باختصار ومفاجأة."
-            full_prompt = f"{system_instruction}\n\nسؤال المستخدم: {message}"
+            # دمج التعليمات مع رسالة المستخدم
+            full_prompt = f"{system_instruction}\n\nالمستخدم: {message}"
             
-            response = model.generate_content(full_prompt)
-            return response.text.strip()
+            # تشغيل الطلب في thread منفصل لتجنب تعليق البوت (لأن مكتبة Google ليست async بالكامل)
+            response = await asyncio.to_thread(model.generate_content, full_prompt)
             
+            if response and response.text:
+                return response.text.strip()
+            else:
+                return "عذراً، لم أتمكن من توليد رد حالياً."
+                
         except Exception as e:
             logger.error(f"❌ Gemini chat error: {e}")
-            raise
+            # خطة بديلة: إذا فشل الموديل المحدد، نحاول استخدام الموديل الافتراضي
+            try:
+                fallback_model = genai.GenerativeModel("gemini-pro")
+                fallback_res = await asyncio.to_thread(fallback_model.generate_content, message)
+                return fallback_res.text.strip()
+            except:
+                raise e
     
     async def _chat_with_openai(self, message: str, history: List[Dict]) -> str:
         """استخدام OpenAI GPT للدردشة"""
