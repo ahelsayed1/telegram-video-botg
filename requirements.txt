@@ -1,11 +1,8 @@
 # Telegram Bot
 python-telegram-bot==20.7
-
-# Environment Variables
 python-dotenv==1.0.0
 
-# AI Services
-# تم استبدال المكتبة القديمة بالجديدة هنا 👇
+# AI Services - لاحظ المكتبة الجديدة فقط
 google-genai
 openai==1.12.0
 
@@ -19,8 +16,6 @@ Pillow==10.2.0
 # Video Processing
 moviepy==1.0.3
 
-# YouTube/Media Download
+# Media Download
 yt-dlp==2024.4.9
-
-# Utilities
 python-dateutil==2.8.2
