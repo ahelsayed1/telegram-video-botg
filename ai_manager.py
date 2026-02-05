@@ -1,10 +1,11 @@
-# ai_manager.py - النسخة الكاملة والمصححة (Fix 404 + Memory + All Features)
+# ai_manager.py - النسخة الكاملة والمعدلة (Fix THOUGHT + All Features)
 import os
 import logging
 import asyncio
 import google.generativeai as genai
 import openai
 import aiohttp
+import re  # مكتبة مهمة لتنظيف الردود
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -42,7 +43,8 @@ class AIManager:
                     logger.info("🔍 جاري فحص موديلات Gemini المتاحة...")
                     all_models = [m.name.replace('models/', '') for m in genai.list_models()]
                     logger.info(f"📋 الموديلات الموجودة: {all_models}")
-                                       # القائمة المفضلة (تم تحديثها لتشمل الجيل 2.5 و 2.0 المتاح في حسابك)
+                    
+                    # القائمة المفضلة (تم تحديثها لتشمل الجيل 2.5 و 2.0 المتاح في حسابك)
                     preferred_models = [
                         'gemini-2.5-flash',       # الأولوية الأولى: الأحدث والأسرع عالمياً
                         'gemini-2.0-flash',       # الخيار الثاني
@@ -94,6 +96,20 @@ class AIManager:
             self.gemini_available = False
             self.openai_available = False
             self.luma_available = False
+
+    # ==================== دالة تنظيف الردود (جديد) ====================
+    def clean_response(self, text: str) -> str:
+        """إزالة أفكار الموديل (THOUGHT) والإبقاء على الرد النهائي"""
+        if not text: return ""
+        
+        # حذف كتل الـ THOUGHT التي قد تظهر في بداية الرد
+        # يبحث عن كلمة THOUGHT: ويحذف كل شيء بعدها حتى يجد سطرين فارغين
+        clean_text = re.sub(r'THOUGHT:.*?(?=\n\n|\Z)', '', text, flags=re.DOTALL | re.IGNORECASE)
+        
+        # تنظيف إضافي لأي بقايا
+        clean_text = clean_text.replace("THOUGHT:", "").strip()
+        
+        return clean_text
 
     # ==================== دوال إدارة الحدود (كاملة) ====================
     def check_user_limit(self, user_id: int, service_type: str = "ai_chat") -> Tuple[bool, int]:
@@ -152,7 +168,7 @@ class AIManager:
             logger.error(f"Usage Update Error: {e}")
             return False
 
-    # ==================== خدمة المحادثة (مع الذاكرة وإصلاح الموديل) ====================
+    # ==================== خدمة المحادثة (مع التنظيف والذاكرة) ====================
     async def chat_with_ai(self, user_id: int, message: str, use_gemini: bool = True) -> str:
         try:
             # 1. فحص الرصيد
@@ -169,9 +185,10 @@ class AIManager:
                 if user_id not in self.chat_sessions:
                     try:
                         model = genai.GenerativeModel(self.model_name)
+                        # إضافة تعليمات النظام لتقليل ظهور الأفكار
                         self.chat_sessions[user_id] = model.start_chat(history=[
-                            {"role": "user", "parts": ["أنت مساعد ذكي ومفيد، تتحدث العربية بطلاقة، وتتذكر اسمي وسياق الكلام."]},
-                            {"role": "model", "parts": ["حسناً، فهمت. أنا جاهز للمساعدة وسأتذكر سياق المحادثة."]}
+                            {"role": "user", "parts": ["أنت مساعد ذكي ومفيد. رد مباشرة بالعربية ولا تظهر خطوات تفكيرك."]},
+                            {"role": "model", "parts": ["حسناً، سأرد مباشرة."]}
                         ])
                     except Exception as e:
                         logger.error(f"Start Chat Error: {e}")
@@ -186,7 +203,9 @@ class AIManager:
                 try:
                     # إرسال الرسالة وانتظار الرد
                     response = await chat_session.send_message_async(message)
-                    response_text = response.text
+                    # 🔥 تنظيف الرد هنا 🔥
+                    response_text = self.clean_response(response.text)
+                    
                 except Exception as e:
                     logger.warning(f"Session Error for {user_id}: {e}")
                     # في حالة حدوث خطأ (مثل انتهاء الصلاحية)، نعيد إنشاء الجلسة
@@ -195,7 +214,8 @@ class AIManager:
                         self.chat_sessions[user_id] = model.start_chat(history=[])
                         chat_session = self.chat_sessions[user_id]
                         response = await chat_session.send_message_async(message)
-                        response_text = response.text
+                        # تنظيف الرد بعد إعادة المحاولة
+                        response_text = self.clean_response(response.text)
                     except Exception as final_e:
                          return f"⚠️ حدث خطأ في الاتصال بالموديل {self.model_name}: {final_e}"
 
@@ -223,7 +243,7 @@ class AIManager:
             logger.error(f"General Chat Error: {e}")
             return "⚠️ حدث خطأ غير متوقع أثناء المعالجة."
 
-    # ==================== خدمة الصور (كاملة) ====================
+    # ==================== خدمة الصور (كاملة كما طلبت) ====================
     async def generate_image(self, user_id: int, prompt: str, style: str = "realistic") -> Tuple[Optional[str], str]:
         try:
             allowed, _ = self.check_user_limit(user_id, "image_gen")
@@ -238,7 +258,7 @@ class AIManager:
                     resp = await model.generate_content_async(
                         f"Rewrite this prompt to be a detailed English description for DALL-E image generator, style: {style}. Prompt: {prompt}"
                     )
-                    enhanced_prompt = resp.text
+                    enhanced_prompt = self.clean_response(resp.text) # تنظيف الوصف المحسن أيضاً
                 except Exception as e:
                     logger.warning(f"Prompt enhancement failed: {e}")
 
@@ -294,7 +314,7 @@ class AIManager:
             logger.error(f"Image Gen Error: {e}")
             return None, "حدث خطأ غير متوقع في خدمة الصور."
 
-    # ==================== خدمة الفيديو (كاملة) ====================
+    # ==================== خدمة الفيديو (كاملة كما طلبت) ====================
     async def generate_video(self, user_id: int, prompt: str, image_url: str = None) -> Tuple[Optional[str], str]:
         try:
             allowed, _ = self.check_user_limit(user_id, "video_gen")
@@ -309,7 +329,7 @@ class AIManager:
                 try:
                     model = genai.GenerativeModel(self.model_name)
                     resp = await model.generate_content_async(f"Enhance this video prompt, make it cinematic and detailed (English): {prompt}")
-                    enhanced_prompt = resp.text
+                    enhanced_prompt = self.clean_response(resp.text)
                 except: pass
 
             # إعداد الطلب لخدمة Luma Dream Machine
